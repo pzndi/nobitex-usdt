@@ -49,6 +49,7 @@ TIMEOUT = 60
 TRADES_TAB = 'معاملات'
 WALLET_TAB = 'کیف پول'
 UNIVERSE_TAB = 'dynamic universe'
+REPORT_TAB = 'گزارش'
 
 ST_DRY = 'شبیه‌سازی شده'
 ST_PLACED = 'ثبت‌شده'
@@ -76,7 +77,7 @@ class NobitexClient:
         return self._sc.post('/users/wallets/list', {})
 
     def wallet_balance(self, currency):
-        for key in ('wallet', 'currency'):
+        for key in ('currency', 'wallet'):
             code, data = self._sc.post('/users/wallets/balance', {key: currency.lower()})
             if code == 200:
                 return code, data
@@ -131,6 +132,24 @@ class NobitexClient:
                    'execution': 'market' if is_market else 'limit'}
         if client_order_id:
             payload['clientOrderId'] = client_order_id
+        return self._sc.post('/market/orders/add', payload)
+
+    def place_oco_sell(self, symbol, volume, take_profit, stop_price, stop_limit=None):
+        """OCO فروش — حد سود (limit) + حد ضرر (stop-limit) بومی روی صرافی
+        مستندات p117: mode=oco + price + stopPrice + stopLimitPrice
+        شرط فروش: stopPrice < قیمت بازار < price"""
+        if stop_limit is None:
+            stop_limit = (stop_price or 0) * 0.995
+        payload = {'type': 'sell',
+                   'market': f'{symbol}USDT',
+                   'srcCurrency': symbol.lower(),
+                   'dstCurrency': 'usdt',
+                   'price': str(take_profit),
+                   'amount': str(volume),
+                   'execution': 'limit',
+                   'mode': 'oco',
+                   'stopPrice': str(stop_price),
+                   'stopLimitPrice': str(stop_limit)}
         return self._sc.post('/market/orders/add', payload)
 
 
@@ -226,7 +245,7 @@ def read_ledger(ws):
     - سفارش‌های باز، شمارش معاملات امروز (شمسی)، خالص خرج شبیه‌سازی
     """
     vals = ws.get_all_values()
-    led = {'positions': {}, 'pending': set(), 'daily_count': 0,
+    led = {'positions': {}, 'pending': set(), 'pending_sells': set(), 'daily_count': 0,
            'dry_net_spent': 0.0, 'rows': []}
     today = jtoday()
     bought_vol, bought_cost, sold_vol = {}, {}, {}
@@ -252,6 +271,8 @@ def read_ledger(ws):
             led['daily_count'] += 1
         if status in OPENISH:
             led['pending'].add(sym)
+            if act == 'فروش':
+                led['pending_sells'].add(sym)
         if status in EXECUTED:
             if act == 'خرید':
                 bought_vol[sym] = bought_vol.get(sym, 0.0) + vol
@@ -336,6 +357,19 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
                      sl, tp, oid, ST_PLACED, str(data)[:80])
         p = led['positions'].setdefault(sym, {'volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
         p['volume'] += vol
+        if st.use_exchange_oco:
+            code2, data2 = client.place_oco_sell(sym, vol, parse_price(tp), parse_price(sl))
+            ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+            o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
+            oid2 = str(o2.get('id') or '') if ok2 else ''
+            if ok2:
+                record_trade(ws_t, 'فروش', sym, '', 'OCO حد سود/ضرر بومی صرافی',
+                             tp, vol, round(vol * (parse_price(tp) or 0.0), 2),
+                             '', '', oid2, ST_PLACED, f'OCO: TP={tp} | SL={sl}')
+                led.setdefault('pending_sells', set()).add(sym)
+            else:
+                log.error('ثبت OCO برای %s ناموفق (HTTP %s): %s — SL/TP توسط خود ربات چک می‌شود',
+                          sym, code2, str(data2)[:120])
     else:
         log.error('ثبت سفارش واقعی خرید %s ناموفق: HTTP %s | %s', sym, code, str(data)[:150])
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
@@ -380,7 +414,8 @@ def check_sl_tp(st, ws_t, client, dry, led, prices):
             px = _public_price(sym)
             if px:
                 prices[sym] = px
-    exits = find_sl_tp_exits(led['positions'], prices)
+    exits = [(s, w, px) for s, w, px in find_sl_tp_exits(led['positions'], prices)
+             if s not in led.get('pending_sells', set())]
     if not exits:
         return
     log.info('خروج‌های فعال: %s', '، '.join(f'{s} ({w})' for s, w, _ in exits))
@@ -575,6 +610,80 @@ def refresh_wallet(sh, st, rows):
               range_name='A1:C1')
     ws.update(values=padded, range_name='A4:F44')
     log.info('تب کیف پول از API به‌روزرسانی شد (%d دارایی)', len(out))
+
+
+def update_report(sh, st, rows):
+    """گزارش عملکرد — از دفتر معاملات + قیمت لحظه‌ای
+    P&L شناور: پوزیشن‌های باز × (قیمت فعلی − میانگین ورود)
+    P&L محقق: جمع «P&L: …» ثبت‌شده در ردیف‌های فروش"""
+    import re as _re
+    led = read_ledger(sh.worksheet(TRADES_TAB))
+    prices = {str(r[0]).upper(): parse_price(r[2]) for r in rows if r and r[0]}
+    for sym in led['positions']:
+        if prices.get(sym) is None:
+            px = _public_price(sym)
+            if px:
+                prices[sym] = px
+
+    unreal = 0.0
+    pos_value = 0.0
+    for sym, p in led['positions'].items():
+        px = prices.get(sym)
+        if px is None:
+            continue
+        pos_value += p['volume'] * px
+        if p.get('entry_price'):
+            unreal += p['volume'] * (px - p['entry_price'])
+
+    realized = 0.0
+    closed = wins = 0
+    for _, r in led['rows']:
+        if r[2].strip() != 'فروش':
+            continue
+        m = _re.search(r'P&L:\s*([+-]?\d+(?:\.\d+)?)', str(r[12]))
+        if not m:
+            continue
+        v = float(m.group(1))
+        realized += v
+        closed += 1
+        if v > 0:
+            wins += 1
+
+    n_buys = sum(1 for _, r in led['rows']
+                 if r[2].strip() == 'خرید' and r[11].strip() in EXECUTED)
+    winrate = f'{wins * 100 // closed}٪' if closed else '—'
+
+    if st.dry_run:
+        cash = st.dry_start_usdt - led['dry_net_spent']
+        total = cash + pos_value - st.dry_start_usdt
+        cash_row = ['نقد باقی‌مانده (شبیه‌سازی)', fmt_bal(cash), 'USDT']
+        total_row = ['P&L کل شبیه‌سازی', f'{total:+.2f}', 'USDT — نقد + ارزش پوزیشن − اولیه']
+    else:
+        cash_row = ['نقد باقی‌مانده', '—', 'از تب کیف پول (API)']
+        total_row = ['P&L کل ربات', f'{unreal + realized:+.2f}', 'USDT — شناور + محقق']
+
+    data = [
+        ['📊 گزارش عملکرد ربات', '', f'به‌روزرسانی: {jnow()}'],
+        ['شاخص', 'مقدار', 'توضیح'],
+        ['حالت', 'شبیه‌سازی (DRY-RUN)' if st.dry_run else '⚠️ معامله واقعی', ''],
+        ['موجودی اولیه شبیه‌سازی', fmt_bal(st.dry_start_usdt), 'USDT — از تب تنظیمات'],
+        cash_row,
+        ['ارزش پوزیشن‌های باز', fmt_bal(pos_value), 'USDT — با قیمت لحظه‌ای'],
+        ['پوزیشن‌های باز', len(led['positions']), '، '.join(sorted(led['positions'])) or '—'],
+        ['P&L شناور', f'{unreal:+.2f}', 'USDT'],
+        ['P&L محقق', f'{realized:+.2f}', 'USDT'],
+        total_row,
+        ['خریدهای اجراشده', n_buys, ''],
+        ['معاملات بسته‌شده', closed, ''],
+        ['نرخ برد', winrate, 'از معاملات بسته‌شده'],
+    ]
+    try:
+        ws = sh.worksheet(REPORT_TAB)
+    except Exception:
+        ws = sh.add_worksheet(title=REPORT_TAB, rows=30, cols=6)
+        log.info('تب «گزارش» ساخته شد')
+    ws.update(values=data, range_name=f'A1:C{len(data)}')
+    log.info('تب گزارش به‌روزرسانی شد — شناور %+.2f | محقق %+.2f USDT', unreal, realized)
 
 
 if __name__ == '__main__':

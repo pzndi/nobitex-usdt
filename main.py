@@ -207,6 +207,13 @@ def main():
             log.exception('خطا در ماژول معاملات')
     else:
         log.info('معاملات غیرفعال (TRADING_ENABLED=خیر) — فقط تولید سیگنال')
+
+    # ۶) گزارش عملکرد
+    try:
+        import trader
+        trader.update_report(sh, settings, rows)
+    except Exception:
+        log.exception('خطا در به‌روزرسانی گزارش عملکرد')
     return 0
 
 
