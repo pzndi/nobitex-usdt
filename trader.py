@@ -324,7 +324,8 @@ def read_ledger(ws):
             amt = 0.0
         if act not in ('خرید', 'فروش'):
             continue
-        if t.startswith(today) and status != 'ناموفق':
+        if (t.startswith(today) and status != 'ناموفق'
+                and 'OCO' not in r[4]):
             led['daily_count'] += 1
         if status in OPENISH:
             led['pending'].add(sym)
@@ -431,7 +432,8 @@ def sync_order_statuses(ws_t, led, client, st=None):
                 if ok2:
                     record_trade(ws_t, 'فروش', sym_c, '', 'OCO حد سود/ضرر بومی صرافی',
                                  fmt_price(tp_o), vol_o, round(vol_o * tp_o, 2),
-                                 '', '', clean_oid(o2.get('id')), ST_PLACED,
+                                 fmt_price(sl_o), fmt_price(tp_o),
+                                 clean_oid(o2.get('id')), ST_PLACED,
                                  'OCO: TP=' + fmt_price(tp_o) + ' | SL=' + fmt_price(sl_o))
                     led.setdefault('pending_sells', set()).add(sym_c)
                     log.info('OCO بومی صرافی برای %s ثبت شد (TP=%s | SL=%s)',
