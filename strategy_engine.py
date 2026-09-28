@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-strategy_engine.py — دریافت کندل از نوبیتکس (UDF) + محاسبه سیگنال با رأی‌گیری اندیکاتورها
-منطق: هر اندیکاتور فعال رأی می‌دهد (+1 خرید / -1 فروش / 0 خنثی)؛
-اگر درصد آرای هم‌جهت به آستانه تنظیمات برسد → سیگنال صادر می‌شود.
-حد ضرر/سود = قیمت ± ضریب × ATR (نوسان واقعی همان نماد)
+strategy_engine.py — دریافت کندل از نوبیتکس (UDF) + آرای اندیکاتورها
+دو کاربرد مشترک:
+  analyze()       → تحلیل لحظه‌ای آخرین کندل (با پارامترهای قابل‌تحمیل از بک‌تست)
+  prepare_votes() → سری کامل آرای هر کندل — مبنای بک‌تست
+حد ضرر/سود = قیمت ± ضریب × ATR
 """
 import logging
 import time
@@ -16,7 +17,7 @@ from indicators import atr, bollinger, cci, ema, macd, obv, rsi, sma, stoch, wpr
 log = logging.getLogger('nobitex-bot')
 
 UDF_URL = 'https://apiv2.nobitex.ir/market/udf/history'
-HEADERS = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) nobitex-sheet-updater/2.0'}
+HEADERS = {'User-Agent': 'TraderBot/NobitexSheetBot-2.0'}
 
 RES_MINUTES = {'1': 1, '5': 5, '15': 15, '30': 30, '60': 60, '180': 180,
                '240': 240, '360': 360, '720': 720,
@@ -77,9 +78,172 @@ def fetch_candles(udf_symbol, resolution, lookback, retries=3):
     return None
 
 
-def analyze(c, st):
-    """محاسبه همه اندیکاتورهای فعال + رأی‌گیری + حد ضرر/سود"""
+def prepare_votes(c, st):
+    """آرای همه اندیکاتورهای فعال به‌صورت سری زمانی (طول = تعداد کندل)"""
     closes, highs, lows, vols = c['c'], c['h'], c['l'], c['v']
+    n = len(closes)
+    V = {'buy': [0] * n, 'sell': [0] * n, 'neutral': [0] * n,
+         'note': [''] * n, 'trend': ['—'] * n, 'atr': [None] * n}
+    ind = st.indicators
+
+    def addf(i, v, note):
+        if v == 1:
+            V['buy'][i] += 1
+        elif v == -1:
+            V['sell'][i] += 1
+        else:
+            V['neutral'][i] += 1
+        if v != 0 and note:
+            V['note'][i] = (V['note'][i] + '؛ ' + note if V['note'][i] else note)[:250]
+
+    trend_f = trend_s = None
+
+    if ind.get('SMA', {}).get('enabled'):
+        pp = ind['SMA'].get('params', {})
+        f_, s_ = pint(pp.get('fast'), 20), pint(pp.get('slow'), 50)
+        fa, sl2 = sma(closes, f_), sma(closes, s_)
+        trend_f, trend_s = fa, sl2
+        for i in range(n):
+            if fa[i] is not None and sl2[i] is not None:
+                up = fa[i] > sl2[i]
+                addf(i, 1 if up else -1,
+                     f'SMA{f_} {"بالاتر از" if up else "پایین‌تر از"} SMA{s_}')
+            else:
+                addf(i, 0, '')
+
+    if ind.get('EMA', {}).get('enabled'):
+        pp = ind['EMA'].get('params', {})
+        f_, s_ = pint(pp.get('fast'), 9), pint(pp.get('slow'), 21)
+        fa, sl2 = ema(closes, f_), ema(closes, s_)
+        if trend_f is None:
+            trend_f, trend_s = fa, sl2
+        for i in range(n):
+            if fa[i] is not None and sl2[i] is not None:
+                up = fa[i] > sl2[i]
+                addf(i, 1 if up else -1,
+                     f'EMA{f_} {"بالاتر از" if up else "پایین‌تر از"} EMA{s_}')
+            else:
+                addf(i, 0, '')
+
+    if ind.get('RSI', {}).get('enabled'):
+        pp = ind['RSI'].get('params', {})
+        p_ = pint(pp.get('period'), 14)
+        os_ = pflt(pp.get('oversold'), 30)
+        ob_ = pflt(pp.get('overbought'), 70)
+        rr = rsi(closes, p_)
+        for i in range(n):
+            if rr[i] is not None:
+                if rr[i] < os_:
+                    addf(i, 1, f'RSI={rr[i]:.0f} اشباع فروش')
+                elif rr[i] > ob_:
+                    addf(i, -1, f'RSI={rr[i]:.0f} اشباع خرید')
+                else:
+                    addf(i, 0, '')
+            else:
+                addf(i, 0, '')
+
+    if ind.get('MACD', {}).get('enabled'):
+        pp = ind['MACD'].get('params', {})
+        f_, s_, g_ = pint(pp.get('fast'), 12), pint(pp.get('slow'), 26), pint(pp.get('signal'), 9)
+        line, sig, _ = macd(closes, f_, s_, g_)
+        for i in range(n):
+            if line[i] is not None and sig[i] is not None:
+                up = line[i] > sig[i]
+                addf(i, 1 if up else -1,
+                     'MACD بالای خط سیگنال' if up else 'MACD زیر خط سیگنال')
+            else:
+                addf(i, 0, '')
+
+    if ind.get('BB', {}).get('enabled'):
+        pp = ind['BB'].get('params', {})
+        p_ = pint(pp.get('period'), 20)
+        sd_ = pflt(pp.get('std'), 2.0)
+        mid, up_b, lo_b = bollinger(closes, p_, sd_)
+        for i in range(n):
+            if lo_b[i] is not None:
+                if closes[i] < lo_b[i]:
+                    addf(i, 1, 'قیمت زیر باند پایین بولینگر')
+                elif closes[i] > up_b[i]:
+                    addf(i, -1, 'قیمت بالای باند بالای بولینگر')
+                else:
+                    addf(i, 0, '')
+            else:
+                addf(i, 0, '')
+
+    if ind.get('STOCH', {}).get('enabled'):
+        pp = ind['STOCH'].get('params', {})
+        k_p, d_p, sm_ = pint(pp.get('k'), 14), pint(pp.get('d'), 3), pint(pp.get('smooth'), 3)
+        kk, dd = stoch(highs, lows, closes, k_p, d_p, sm_)
+        for i in range(n):
+            if kk[i] is not None and dd[i] is not None:
+                if kk[i] < 20 and kk[i] > dd[i]:
+                    addf(i, 1, f'%K={kk[i]:.0f} اشباع فروش در حال چرخش')
+                elif kk[i] > 80 and kk[i] < dd[i]:
+                    addf(i, -1, f'%K={kk[i]:.0f} اشباع خرید در حال چرخش')
+                else:
+                    addf(i, 0, '')
+            else:
+                addf(i, 0, '')
+
+    if ind.get('OBV', {}).get('enabled'):
+        pp = ind['OBV'].get('params', {})
+        p_ = pint(pp.get('period'), 20)
+        o = obv(closes, vols)
+        for i in range(n):
+            j = i - p_
+            if j >= 0:
+                if o[i] > o[j]:
+                    addf(i, 1, 'OBV صعودی — حجم تأییدکننده خرید')
+                elif o[i] < o[j]:
+                    addf(i, -1, 'OBV نزولی — حجم تأییدکننده فروش')
+                else:
+                    addf(i, 0, '')
+            else:
+                addf(i, 0, '')
+
+    if ind.get('CCI', {}).get('enabled'):
+        pp = ind['CCI'].get('params', {})
+        p_ = pint(pp.get('period'), 20)
+        cc = cci(highs, lows, closes, p_)
+        for i in range(n):
+            if cc[i] is not None:
+                if cc[i] < -100:
+                    addf(i, 1, f'CCI={cc[i]:.0f} اشباع فروش')
+                elif cc[i] > 100:
+                    addf(i, -1, f'CCI={cc[i]:.0f} اشباع خرید')
+                else:
+                    addf(i, 0, '')
+            else:
+                addf(i, 0, '')
+
+    if ind.get('WPR', {}).get('enabled'):
+        pp = ind['WPR'].get('params', {})
+        p_ = pint(pp.get('period'), 14)
+        ww = wpr(highs, lows, closes, p_)
+        for i in range(n):
+            if ww[i] is not None:
+                if ww[i] < -80:
+                    addf(i, 1, f'%R={ww[i]:.0f} اشباع فروش')
+                elif ww[i] > -20:
+                    addf(i, -1, f'%R={ww[i]:.0f} اشباع خرید')
+                else:
+                    addf(i, 0, '')
+            else:
+                addf(i, 0, '')
+
+    # ATR — زیرساخت حد ضرر/سود (رأی ندارد)
+    p_atr = pint(ind.get('ATR', {}).get('params', {}).get('period'), 14)
+    V['atr'] = atr(highs, lows, closes, p_atr)
+
+    for i in range(n):
+        if trend_f is not None and trend_f[i] is not None and trend_s[i] is not None:
+            V['trend'][i] = 'صعودی' if trend_f[i] > trend_s[i] else 'نزولی'
+    return V
+
+
+def analyze(c, st, thr=None, slm=None, tpm=None):
+    """تحلیل لحظه‌ای آخرین کندل؛ thr/slm/tpm اختیاری = تحمیل استراتژی بک‌تست همان نماد"""
+    closes = c['c']
     n = len(closes)
     price = closes[-1]
     out = {'price': fmt_price(price), 'trend': '—', 'signal': '—', 'strength': 0,
@@ -88,181 +252,30 @@ def analyze(c, st):
         out['note'] = f'داده ناکافی ({n} کندل)'
         return out
 
-    ind = st.indicators
-    votes = []
-
-    def add(name, v, reason):
-        votes.append((name, v, reason))
-
-    # ---------- رأی اندیکاتورها ----------
-    if ind.get('SMA', {}).get('enabled'):
-        pp = ind['SMA'].get('params', {})
-        f_, s_ = pint(pp.get('fast'), 20), pint(pp.get('slow'), 50)
-        fa, sl2 = sma(closes, f_), sma(closes, s_)
-        if fa[-1] is not None and sl2[-1] is not None:
-            up = fa[-1] > sl2[-1]
-            add('SMA', 1 if up else -1,
-                f'SMA{f_} {"بالاتر از" if up else "پایین‌تر از"} SMA{s_}')
-        else:
-            add('SMA', 0, 'داده کافی نیست')
-
-    if ind.get('EMA', {}).get('enabled'):
-        pp = ind['EMA'].get('params', {})
-        f_, s_ = pint(pp.get('fast'), 9), pint(pp.get('slow'), 21)
-        fa, sl2 = ema(closes, f_), ema(closes, s_)
-        if fa[-1] is not None and sl2[-1] is not None:
-            up = fa[-1] > sl2[-1]
-            add('EMA', 1 if up else -1,
-                f'EMA{f_} {"بالاتر از" if up else "پایین‌تر از"} EMA{s_}')
-        else:
-            add('EMA', 0, 'داده کافی نیست')
-
-    if ind.get('RSI', {}).get('enabled'):
-        pp = ind['RSI'].get('params', {})
-        p_ = pint(pp.get('period'), 14)
-        os_ = pflt(pp.get('oversold'), 30)
-        ob_ = pflt(pp.get('overbought'), 70)
-        rr = rsi(closes, p_)
-        if rr[-1] is not None:
-            v = rr[-1]
-            if v < os_:
-                add('RSI', 1, f'RSI={v:.0f} اشباع فروش')
-            elif v > ob_:
-                add('RSI', -1, f'RSI={v:.0f} اشباع خرید')
-            else:
-                add('RSI', 0, f'RSI={v:.0f}')
-        else:
-            add('RSI', 0, 'داده کافی نیست')
-
-    if ind.get('MACD', {}).get('enabled'):
-        pp = ind['MACD'].get('params', {})
-        f_, s_, g_ = pint(pp.get('fast'), 12), pint(pp.get('slow'), 26), pint(pp.get('signal'), 9)
-        line, sig, _ = macd(closes, f_, s_, g_)
-        if line[-1] is not None and sig[-1] is not None:
-            up = line[-1] > sig[-1]
-            add('MACD', 1 if up else -1,
-                'MACD بالای خط سیگنال' if up else 'MACD زیر خط سیگنال')
-        else:
-            add('MACD', 0, 'داده کافی نیست')
-
-    if ind.get('BB', {}).get('enabled'):
-        pp = ind['BB'].get('params', {})
-        p_ = pint(pp.get('period'), 20)
-        sd_ = pflt(pp.get('std'), 2.0)
-        mid, up_b, lo_b = bollinger(closes, p_, sd_)
-        if lo_b[-1] is not None:
-            if price < lo_b[-1]:
-                add('BB', 1, 'قیمت زیر باند پایین بولینگر')
-            elif price > up_b[-1]:
-                add('BB', -1, 'قیمت بالای باند بالای بولینگر')
-            else:
-                add('BB', 0, 'قیمت داخل باندها')
-        else:
-            add('BB', 0, 'داده کافی نیست')
-
-    if ind.get('STOCH', {}).get('enabled'):
-        pp = ind['STOCH'].get('params', {})
-        k_p, d_p, sm_ = pint(pp.get('k'), 14), pint(pp.get('d'), 3), pint(pp.get('smooth'), 3)
-        kk, dd = stoch(highs, lows, closes, k_p, d_p, sm_)
-        if kk[-1] is not None and dd[-1] is not None:
-            if kk[-1] < 20 and kk[-1] > dd[-1]:
-                add('STOCH', 1, f'%K={kk[-1]:.0f} اشباع فروش در حال چرخش')
-            elif kk[-1] > 80 and kk[-1] < dd[-1]:
-                add('STOCH', -1, f'%K={kk[-1]:.0f} اشباع خرید در حال چرخش')
-            else:
-                add('STOCH', 0, f'%K={kk[-1]:.0f}')
-        else:
-            add('STOCH', 0, 'داده کافی نیست')
-
-    if ind.get('OBV', {}).get('enabled'):
-        pp = ind['OBV'].get('params', {})
-        p_ = pint(pp.get('period'), 20)
-        o = obv(closes, vols)
-        if n > p_ and o[-1] is not None and o[-1 - p_] is not None:
-            if o[-1] > o[-1 - p_]:
-                add('OBV', 1, 'OBV صعودی — حجم تأییدکننده خرید')
-            elif o[-1] < o[-1 - p_]:
-                add('OBV', -1, 'OBV نزولی — حجم تأییدکننده فروش')
-            else:
-                add('OBV', 0, 'OBV بدون تغییر')
-        else:
-            add('OBV', 0, 'داده کافی نیست')
-
-    if ind.get('CCI', {}).get('enabled'):
-        pp = ind['CCI'].get('params', {})
-        p_ = pint(pp.get('period'), 20)
-        cc = cci(highs, lows, closes, p_)
-        if cc[-1] is not None:
-            if cc[-1] < -100:
-                add('CCI', 1, f'CCI={cc[-1]:.0f} اشباع فروش')
-            elif cc[-1] > 100:
-                add('CCI', -1, f'CCI={cc[-1]:.0f} اشباع خرید')
-            else:
-                add('CCI', 0, f'CCI={cc[-1]:.0f}')
-        else:
-            add('CCI', 0, 'داده کافی نیست')
-
-    if ind.get('WPR', {}).get('enabled'):
-        pp = ind['WPR'].get('params', {})
-        p_ = pint(pp.get('period'), 14)
-        ww = wpr(highs, lows, closes, p_)
-        if ww[-1] is not None:
-            if ww[-1] < -80:
-                add('WPR', 1, f'%R={ww[-1]:.0f} اشباع فروش')
-            elif ww[-1] > -20:
-                add('WPR', -1, f'%R={ww[-1]:.0f} اشباع خرید')
-            else:
-                add('WPR', 0, f'%R={ww[-1]:.0f}')
-        else:
-            add('WPR', 0, 'داده کافی نیست')
-
-    # ---------- ATR — همیشه محاسبه می‌شود (زیرساخت حد ضرر/سود) ----------
-    p_atr = pint(ind.get('ATR', {}).get('params', {}).get('period'), 14)
-    a = atr(highs, lows, closes, p_atr)
-
-    # ---------- روند (نمایشی) ----------
-    trend = '—'
-    if ind.get('SMA', {}).get('enabled'):
-        pp = ind['SMA'].get('params', {})
-        f_, s_ = pint(pp.get('fast'), 20), pint(pp.get('slow'), 50)
-        fa, sl2 = sma(closes, f_), sma(closes, s_)
-        if fa[-1] is not None and sl2[-1] is not None:
-            trend = 'صعودی' if fa[-1] > sl2[-1] else 'نزولی'
-    elif ind.get('EMA', {}).get('enabled'):
-        pp = ind['EMA'].get('params', {})
-        f_, s_ = pint(pp.get('fast'), 9), pint(pp.get('slow'), 21)
-        fa, sl2 = ema(closes, f_), ema(closes, s_)
-        if fa[-1] is not None and sl2[-1] is not None:
-            trend = 'صعودی' if fa[-1] > sl2[-1] else 'نزولی'
-    else:
-        m20 = sma(closes, 20)
-        if m20[-1] is not None:
-            trend = 'صعودی' if closes[-1] > m20[-1] else 'نزولی'
-    out['trend'] = trend
-
-    # ---------- شمارش آرا و صدور سیگنال ----------
-    b = sum(1 for _, v, _ in votes if v == 1)
-    s_ = sum(1 for _, v, _ in votes if v == -1)
-    nn = sum(1 for _, v, _ in votes if v == 0)
+    v = prepare_votes(c, st)
+    i = n - 1
+    b, s_, nn = v['buy'][i], v['sell'][i], v['neutral'][i]
     out['buy'], out['sell'], out['neutral'] = b, s_, nn
-    total = len(votes)
+    out['trend'] = v['trend'][i]
+    total = b + s_ + nn
+    thr_eff = thr if thr is not None else st.threshold_pct
     if total == 0:
         out['signal'] = 'خنثی'
         out['note'] = 'هیچ اندیکاتور رأی‌دهنده‌ای فعال نیست'
     else:
         bp, sp = b / total * 100.0, s_ / total * 100.0
-        thr = st.threshold_pct
-        if bp >= thr:
+        if bp >= thr_eff:
             out['signal'], out['strength'] = 'خرید', round(bp)
-        elif sp >= thr:
+        elif sp >= thr_eff:
             out['signal'], out['strength'] = 'فروش', round(sp)
         else:
             out['signal'], out['strength'] = 'خنثی', round(max(bp, sp))
-        active = [f'{nm}: {rs}' for nm, v, rs in votes if v != 0]
-        out['note'] = ('؛ '.join(active))[:250] if active else 'همه اندیکاتورها خنثی'
+        out['note'] = v['note'][i] or 'همه اندیکاتورها خنثی'
 
-    # ---------- حد ضرر / حد سود ----------
-    if a[-1] is not None:
-        out['sl'] = fmt_price(price - st.sl_atr_mult * a[-1])
-        out['tp'] = fmt_price(price + st.tp_atr_mult * a[-1])
+    a = v['atr'][i]
+    slm_eff = slm if slm is not None else st.sl_atr_mult
+    tpm_eff = tpm if tpm is not None else st.tp_atr_mult
+    if a is not None:
+        out['sl'] = fmt_price(price - slm_eff * a)
+        out['tp'] = fmt_price(price + tpm_eff * a)
     return out

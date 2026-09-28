@@ -12,8 +12,11 @@ INDICATOR_KEYS = {'SMA', 'EMA', 'RSI', 'MACD', 'BB', 'STOCH', 'OBV', 'CCI', 'WPR
 TIMEFRAME_KEYS = {'1m', '5m', '15m', '30m', '1h', '3h', '4h', '6h', '12h', '1D', '2D', '3D'}
 TRADING_KEYS = {'TRADING_ENABLED', 'DRY_RUN', 'MAX_DAILY_TRADES', 'ORDER_TYPE',
                 'ORDER_SIZE_USDT', 'MAX_OPEN_POSITIONS', 'MIN_USDT_BALANCE', 'DRY_START_USDT',
-                'SL_ATR_MULT', 'TP_ATR_MULT', 'USE_EXCHANGE_OCO'}
-GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK'}
+                'SL_ATR_MULT', 'TP_ATR_MULT', 'USE_EXCHANGE_OCO',
+                'TRAIL_ENABLED', 'TRAIL_ACTIVATION_PCT', 'TRAIL_DISTANCE_PCT'}
+GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK',
+                   'INTERVAL_UNIVERSE_MIN', 'INTERVAL_SIGNALS_MIN', 'INTERVAL_BACKTEST_MIN',
+                   'INTERVAL_WALLET_MIN', 'BACKTEST_TIMEFRAME'}
 
 RES_FALLBACK = {'1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '3h': '180',
                 '4h': '240', '6h': '360', '12h': '720', '1D': '1D', '2D': '2D', '3D': '3D'}
@@ -34,9 +37,13 @@ DEFAULT_TIMEFRAMES = [('15m', '15'), ('1h', '60'), ('4h', '240'), ('1D', '1D')]
 DEFAULT_TRADING = {'TRADING_ENABLED': 'خیر', 'DRY_RUN': 'بله', 'MAX_DAILY_TRADES': '10',
                    'ORDER_TYPE': 'market', 'ORDER_SIZE_USDT': '50',
                    'MAX_OPEN_POSITIONS': '3', 'MIN_USDT_BALANCE': '20',
-                   'DRY_START_USDT': '1000', 'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0', 'USE_EXCHANGE_OCO': 'خیر'}
+                   'DRY_START_USDT': '1000', 'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0', 'USE_EXCHANGE_OCO': 'خیر',
+                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0'}
 DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
-                   'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300'}
+                   'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300',
+                   'INTERVAL_UNIVERSE_MIN': '120', 'INTERVAL_SIGNALS_MIN': '5',
+                   'INTERVAL_BACKTEST_MIN': '30', 'INTERVAL_WALLET_MIN': '30',
+                   'BACKTEST_TIMEFRAME': '1D'}
 
 
 def load_env(path='.env'):
@@ -183,3 +190,40 @@ class Settings:
     @property
     def use_exchange_oco(self):
         return truthy(self.trading.get('USE_EXCHANGE_OCO', 'خیر'))
+
+    @property
+    def trail_enabled(self):
+        return truthy(self.trading.get('TRAIL_ENABLED', 'بله'))
+
+    @property
+    def trail_activation_pct(self):
+        return self._tnum('TRAIL_ACTIVATION_PCT', 1.0)
+
+    @property
+    def trail_distance_pct(self):
+        return self._tnum('TRAIL_DISTANCE_PCT', 2.0)
+
+    # ---------- بازه چرخه‌ها (دقیقه) — قابل تغییر از شیت ----------
+    def _interval(self, key, default):
+        return max(1, int(_num(self.general.get(key), default)))
+
+    @property
+    def interval_universe_min(self):
+        return self._interval('INTERVAL_UNIVERSE_MIN', 120)
+
+    @property
+    def interval_signals_min(self):
+        return self._interval('INTERVAL_SIGNALS_MIN', 5)
+
+    @property
+    def interval_backtest_min(self):
+        return self._interval('INTERVAL_BACKTEST_MIN', 30)
+
+    @property
+    def interval_wallet_min(self):
+        return self._interval('INTERVAL_WALLET_MIN', 30)
+
+    @property
+    def backtest_timeframe(self):
+        return str(self.general.get('BACKSET_TIMEFRAME') or
+                   self.general.get('BACKTEST_TIMEFRAME') or '1D').strip()
