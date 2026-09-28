@@ -130,6 +130,7 @@ def main():
                 state['last'][name] = now
                 ran.append(name)
             except Exception:
+                state['last'][name] = now  # جلوگیری از کوبیدن API در خطای پایدار
                 log.exception('خطا در چرخه %s', name)
     save_state(state)
     if ran:

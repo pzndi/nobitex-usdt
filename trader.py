@@ -46,7 +46,10 @@ log = logging.getLogger('nobitex-bot')
 BASE = 'https://apiv2.nobitex.ir'
 TIMEOUT = 60
 
-TRADES_TAB = 'معاملات'
+ORDERS_TAB = 'سفارشات'        # دفتر سفارش‌ها
+CLOSED_TAB = 'اتمام معاملات'   # معاملات بسته‌شده
+RANKING_TAB = 'معاملات'        # جدول رتبه‌بندی برای سفارشگزاری
+TRADES_TAB = ORDERS_TAB        # سازگاری: دفتر و گزارش از سفارشات خوانده می‌شوند
 WALLET_TAB = 'کیف پول'
 UNIVERSE_TAB = 'dynamic universe'
 REPORT_TAB = 'گزارش'
@@ -61,7 +64,28 @@ ST_PENDING_STOP = 'در انتظار تریگر'
 EXECUTED = {ST_DRY, ST_FILLED, ST_PARTIAL}
 OPENISH = {ST_PLACED, ST_OPEN, ST_PENDING_STOP}
 
-MIN_TFS = 2  # حداقل تعداد تایم‌فریم هم‌جهت برای صدور سفارش
+MIN_TFS = 2
+
+
+def record_closed(ws_t, sym, entry_time, entry_price, exit_price, vol, reason, mode):
+    """ثبت معامله بسته‌شده در تب «اتمام معاملات»"""
+    try:
+        pnl = vol * (exit_price - entry_price)
+        pct = (exit_price / entry_price - 1) * 100 if entry_price else 0.0
+        dur = '—'
+        try:
+            import jdatetime
+            t0 = jdatetime.datetime.strptime(str(entry_time), '%Y/%m/%d %H:%M')
+            dur = round((jdatetime.datetime.now() - t0).total_seconds() / 3600, 1)
+        except Exception:
+            pass
+        ws_c = ws_t.spreadsheet.worksheet(CLOSED_TAB)
+        ws_c.append_row([jnow(), sym, entry_time, fmt_price(entry_price),
+                         fmt_price(exit_price), vol, round(pnl, 2), round(pct, 2),
+                         reason, dur, mode])
+        log.info('معامله %s بسته شد — P&L: %+.2f USDT (%s)', sym, pnl, reason)
+    except Exception:
+        log.exception('خطا در ثبت معامله بسته‌شده %s', sym)  # حداقل تعداد تایم‌فریم هم‌جهت برای صدور سفارش
 
 
 # ================= کلاینت API معاملاتی =================
@@ -329,6 +353,16 @@ def sync_order_statuses(ws_t, led, client):
             ws_t.update_cell(row_num, 12, new_st)
             if vol_update is not None:
                 ws_t.update_cell(row_num, 7, vol_update)
+            if r[2].strip() == 'فروش' and new_st == ST_FILLED:
+                sym_c = r[1].strip().upper()
+                pos_c = led['positions'].get(sym_c) or {}
+                entry_c = pos_c.get('entry_price') or parse_price(r[5]) or 0.0
+                vol_c = parse_price(r[6]) or 0.0
+                t_in = next((rr[0] for _, rr in led['rows']
+                             if rr[1].strip().upper() == sym_c and rr[2].strip() == 'خرید'
+                             and rr[11].strip() in EXECUTED), '—')
+                record_closed(ws_t, sym_c, t_in, entry_c, parse_price(r[5]) or 0.0,
+                              vol_c, 'اجرای سفارش فروش', 'واقعی')
             log.info('وضعیت سفارش %s → %s', oid, new_st)
 
 
@@ -440,6 +474,10 @@ def sell_one(st, ws_t, client, dry, sym, reason, price, vol, led):
     if dry:
         record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
                      '—', '—', '—', ST_DRY, 'شبیه‌سازی — بدون ارسال به صرافی' + pnl_msg)
+        e_time = next((rr[0] for _, rr in led['rows']
+                   if rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
+                   and rr[11].strip() in EXECUTED), '—')
+        record_closed(ws_t, sym, e_time, entry or price, price, vol, reason, 'شبیه‌سازی')
         led['dry_net_spent'] -= amount
         led['positions'].pop(sym, None)
         return
@@ -458,7 +496,68 @@ def sell_one(st, ws_t, client, dry, sym, reason, price, vol, led):
 
 
 # ================= نقطه ورود اصلی =================
-def run(sh, st, rows):
+
+def apply_trailing(st, ws_t, led, prices):
+    """SL/TP داینامیک — با رشد قیمت، SL به بالا کشیده می‌شود (قفل سود، ریسک کم)"""
+    if not st.trail_enabled:
+        return
+    for sym, p in list(led['positions'].items()):
+        entry, sl, price = p.get('entry_price'), p.get('sl'), prices.get(sym)
+        if not (entry and sl and price):
+            continue
+        if price >= entry * (1 + st.trail_activation_pct / 100.0):
+            new_sl = price * (1 - st.trail_distance_pct / 100.0)
+            if new_sl > sl:
+                p['sl'] = new_sl
+                for row_num, rr in led['rows']:
+                    if (rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
+                            and rr[11].strip() in EXECUTED):
+                        ws_t.update_cell(row_num, 9, fmt_price(new_sl))
+                        break
+                log.info('SL متحرک %s: %s -> %s', sym, fmt_price(sl), fmt_price(new_sl))
+
+
+def write_ranking(sh, st, rows, led, bt_params=None):
+    """رتبه‌بندی چرخه سیگنال — تب «معاملات»: آماده‌سازی ورود/TP/SL برای سفارشگزاری"""
+    ws = sh.worksheet(RANKING_TAB)
+    bt_params = bt_params or {}
+    best = {}
+    for r in rows:
+        if len(r) < 11 or not r[0]:
+            continue
+        sym = str(r[0]).upper()
+        try:
+            strength = float(r[5] or 0)
+        except (TypeError, ValueError):
+            strength = 0.0
+        if sym not in best or strength > best[sym][0]:
+            best[sym] = (strength, list(r))
+    ordered = sorted(best.items(),
+                     key=lambda kv: (1 if kv[1][1][4] == 'خرید' else 0, kv[1][0]),
+                     reverse=True)
+    data = []
+    for rank, (sym, (strength, r)) in enumerate(ordered, 1):
+        price, tp, sl = parse_price(r[2]), parse_price(r[10]), parse_price(r[9])
+        rr = round((tp - price) / (price - sl), 2) if (price and tp and sl and price > sl) else '—'
+        if sym in led.get('positions', {}):
+            status = 'پوزیشن باز'
+        elif sym in led.get('pending', set()):
+            status = 'سفارش باز'
+        else:
+            status = 'کاندید خرید' if r[4] == 'خرید' else '—'
+        bp = bt_params.get(sym) or {}
+        strat = (f"آستانه {bp['thr']}٪ | SL {bp['slm']}xATR | TP {bp['tpm']}xATR"
+                 if bp else 'پیش‌فرض شیت تنظیمات')
+        data.append([rank, sym, r[4], r[5], r[6], r[7], r[8],
+                     r[2], r[2], r[10], r[9], rr, strat, status])
+    n = max(20, len(data) + 4)
+    data = data + [[''] * 14] * (n - len(data))
+    ws.update(values=[['رتبه‌بندی لحظه‌ای برای سفارشگزاری — بازه: INTERVAL_SIGNALS_MIN در تب تنظیمات',
+                       'به‌روزرسانی:', jnow()]], range_name='A1:C1')
+    ws.update(values=data, range_name=f'A4:N{3 + n}')
+
+
+def run(sh, st, rows, state=None):
     dry = st.dry_run
     log.info('ماژول معاملات فعال — حالت: %s', 'شبیه‌سازی (DRY-RUN)' if dry else '⚠️ سفارش واقعی')
     ws_t = sh.worksheet(TRADES_TAB)
@@ -476,6 +575,7 @@ def run(sh, st, rows):
         led = read_ledger(ws_t)  # خواندن مجدد پس از همگام‌سازی
 
     # ۰) اجرای خودکار حد ضرر/حد سود — با اولویت بالا، قبل از سیگنال‌ها
+    apply_trailing(st, ws_t, led, prices)
     check_sl_tp(st, ws_t, client, dry, led, prices)
 
     # شمارش روزانه از API (منبع حقیقت) + ردیف‌های شبیه‌سازی امروز
@@ -538,6 +638,8 @@ def run(sh, st, rows):
         led['daily_count'] += 1
         open_pos += 1
     log.info('پایان ماژول معاملات — مجموع سفارش‌های امروز: %d', led['daily_count'])
+    bt = (state or {}).get('bt_params') or {}
+    write_ranking(sh, st, rows, led, bt)
 
 
 # ================= تب کیف پول =================
