@@ -191,7 +191,9 @@ class NobitexClient:
             o = data.get('order') or {}
             if (str(data.get('updatedStatus')) == 'Canceled'
                     or str(o.get('status')) == 'Canceled'):
-                return code, data
+                out = dict(data)
+                out['status'] = 'ok'
+                return code, out
             return code, {'status': 'failed', 'code': 'TransitionNotApplied',
                           'message': 'updatedStatus=%s orderStatus=%s' % (
                               data.get('updatedStatus'), o.get('status')),
@@ -750,7 +752,8 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                           sym, fmt_price(oco_sl))
                 p['sl'] = oco_sl or sl
                 continue
-            ws_t.update_cell(oco_row[0], 12, ST_CANCELLED)
+            if oco_row[0]:
+                ws_t.update_cell(oco_row[0], 12, ST_CANCELLED)
             vol_o = p['real_volume']
             avail = currency_available(client, sym)
             if avail is not None:
@@ -779,6 +782,17 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                         for _k in ('id', 'pairId', 'orderId'):
                             if _lg.get(_k):
                                 leg_ids.append(clean_oid(_lg.get(_k)))
+            if not leg_ids:
+                try:
+                    _co, _do = client.open_orders()
+                    for _lg in (_do.get('orders') or []):
+                        if (str(_lg.get('srcCurrency', '')).lower() == sym.lower()
+                                and str(_lg.get('type')) == 'sell'):
+                            for _k in ('pairId', 'id'):
+                                if _lg.get(_k):
+                                    leg_ids.append(clean_oid(_lg.get(_k)))
+                except Exception:
+                    pass
             oid_new = '|'.join(dict.fromkeys(leg_ids))
             record_trade(ws_t, 'فروش', sym, '', 'OCO متحرک (SL بالاتر)',
                          fmt_price(tp_o), vol_o, round(vol_o * tp_o, 2),
@@ -934,12 +948,31 @@ def backfill_oco(st, ws_t, client, led, prices):
                     for _k in ('id', 'pairId', 'orderId'):
                         if _lg.get(_k):
                             leg_ids.append(clean_oid(_lg.get(_k)))
+        if not leg_ids:
+            try:
+                _co, _do = client.open_orders()
+                for _lg in (_do.get('orders') or []):
+                    if (str(_lg.get('srcCurrency', '')).lower() == sym.lower()
+                            and str(_lg.get('type')) == 'sell'):
+                        for _k in ('pairId', 'id'):
+                            if _lg.get(_k):
+                                leg_ids.append(clean_oid(_lg.get(_k)))
+            except Exception:
+                pass
         record_trade(ws_t, 'فروش', sym, '', 'OCO تور ایمنی (جبران)',
                      fmt_price(tp), vol_o, round(vol_o * tp, 2),
                      fmt_price(sl), fmt_price(tp),
                      '|'.join(dict.fromkeys(leg_ids)), ST_PLACED,
                      'SL=' + fmt_price(sl) + ' | TP=' + fmt_price(tp))
         led.setdefault('pending_sells', set()).add(sym)
+        try:
+            led['rows'].append((len(ws_t.col_values(1)),
+                                [jnow(), sym, 'فروش', '', 'OCO تور ایمنی (جبران)',
+                                 fmt_price(tp), vol_o, round(vol_o * tp, 2),
+                                 fmt_price(sl), fmt_price(tp),
+                                 '|'.join(dict.fromkeys(leg_ids)), ST_PLACED, '']))
+        except Exception:
+            pass
         log.info('OCO تور ایمنی %s ثبت شد (SL=%s | TP=%s)',
                  sym, fmt_price(sl), fmt_price(tp))
 
