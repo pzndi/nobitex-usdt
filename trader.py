@@ -300,7 +300,7 @@ def read_ledger(ws):
       (شبیه‌سازی = ردیف‌های «شبیه‌سازی شده»؛ واقعی = «پر شد/بخشی پر»)
     - سفارش‌های باز، شمارش امروز (شمسی)، خالص خرج شبیه‌سازی
     """
-    vals = ws.get_all_values()
+    vals = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
     led = {'positions': {}, 'pending': set(), 'pending_sells': set(),
            'daily_count': 0, 'dry_net_spent': 0.0, 'rows': []}
     today = jtoday()
@@ -364,29 +364,29 @@ def read_ledger(ws):
 
 
 # ================= همگام‌سازی وضعیت از API =================
-def sync_order_statuses(ws_t, led, client):
-    """همگام‌سازی وضعیت سفارش‌های واقعی از API
-    مقادیر رسمی (مستندات apiv2):
-      Active = فعال در بازار | Done = کامل پر شده
-      Inactive = سفارش حد ضرر هنوز به قیمت توقف نرسیده
-      Canceled = لغو شده — اگر matchedAmount > 0 باشد یعنی بخشی پر شده و لغو شده"""
+def sync_order_statuses(ws_t, led, client, st=None):
+    """همگام‌سازی وضعیت سفارش‌های واقعی از API نوبیتکس
+    - مقادیر رسمی: Active / Done / Inactive / Canceled (matchedAmount>0 = بخشی پر)
+    - در لحظه‌ی گذار سفارش خرید به «پر شد»: ثبت OCO بومی صرافی (اگر فعال باشد)
+      این محل اصلی OCO برای سفارش‌های limit است که با تأخیر پر می‌شوند"""
     api_map = {'Active': ST_OPEN, 'Done': ST_FILLED,
                'Inactive': ST_PENDING_STOP, 'Canceled': ST_CANCELLED}
     for row_num, r in led['rows']:
-        oid = str(r[10]).strip()
+        oid = clean_oid(r[10])
         if not oid or oid == '—' or str(r[11]).strip() not in OPENISH:
             continue
         code, data = client.order_status(oid)
         o = data.get('order') if isinstance(data, dict) else None
         raw = o.get('status') if isinstance(o, dict) else None
         if raw not in api_map:
-            log.warning('وضعیت سفارش %s قابل تشخیص نبود: HTTP %s | %s', oid, code, str(data)[:120])
+            log.warning('وضعیت سفارش %s قابل تشخیص نبود: HTTP %s | %s',
+                        oid, code, str(data)[:120])
             continue
         new_st = api_map[raw]
         vol_update = None
         if raw == 'Canceled':
             try:
-                matched = float(o.get('matchedAmount') or 0)
+                matched = float(str(o.get('matchedAmount') or 0).replace(',', ''))
             except (TypeError, ValueError):
                 matched = 0.0
             if matched > 0:
@@ -396,20 +396,51 @@ def sync_order_statuses(ws_t, led, client):
             ws_t.update_cell(row_num, 12, new_st)
             if vol_update is not None:
                 ws_t.update_cell(row_num, 7, vol_update)
-            if r[2].strip() == 'فروش' and new_st == ST_FILLED:
-                sym_c = r[1].strip().upper()
-                pos_c = led['positions'].get(sym_c) or {}
-                entry_c = pos_c.get('entry_price') or parse_price(r[5]) or 0.0
-                vol_c = parse_price(r[6]) or 0.0
-                t_in = next((rr[0] for _, rr in led['rows']
-                             if rr[1].strip().upper() == sym_c and rr[2].strip() == 'خرید'
-                             and rr[11].strip() in EXECUTED), '—')
-                record_closed(ws_t, sym_c, t_in, entry_c, parse_price(r[5]) or 0.0,
-                              vol_c, 'اجرای سفارش فروش', 'واقعی')
             log.info('وضعیت سفارش %s → %s', oid, new_st)
 
+        sym_c = r[1].strip().upper()
 
-# ================= اجرای سفارش =================
+        # معامله واقعی بسته شد: فروش کامل پر شد → ثبت در «اتمام معاملات»
+        if r[2].strip() == 'فروش' and new_st == ST_FILLED:
+            pos_c = led['positions'].get(sym_c) or {}
+            entry_c = pos_c.get('entry_price') or parse_price(r[5]) or 0.0
+            vol_c = parse_price(r[6]) or 0.0
+            t_in = next((rr[0] for _, rr in led['rows']
+                         if rr[1].strip().upper() == sym_c and rr[2].strip() == 'خرید'
+                         and rr[11].strip() in EXECUTED), '—')
+            record_closed(ws_t, sym_c, t_in, entry_c, parse_price(r[5]) or 0.0,
+                          vol_c, 'اجرای سفارش فروش', 'واقعی')
+
+        # OCO بومی صرافی — فقط در گذار خرید به «پر شد» (یک‌بار؛ در صورت شکست،
+        # حفاظت SL/TP با خود ربات ادامه می‌یابد)
+        if (st is not None and getattr(st, 'use_exchange_oco', False)
+                and r[2].strip() == 'خرید' and new_st == ST_FILLED
+                and sym_c not in led.get('pending_sells', set())):
+            try:
+                vol_o = float(str(o.get('matchedAmount') or r[6]).replace(',', '') or 0)
+            except (TypeError, ValueError):
+                vol_o = 0.0
+            avail_o = currency_available(client, sym_c)
+            if avail_o is not None:
+                vol_o = min(vol_o, avail_o)
+            sl_o, tp_o = parse_price(r[8]), parse_price(r[9])
+            if vol_o > 1e-12 and sl_o and tp_o:
+                code2, data2 = client.place_oco_sell(sym_c, vol_o, tp_o, sl_o)
+                ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+                o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
+                if ok2:
+                    record_trade(ws_t, 'فروش', sym_c, '', 'OCO حد سود/ضرر بومی صرافی',
+                                 fmt_price(tp_o), vol_o, round(vol_o * tp_o, 2),
+                                 '', '', clean_oid(o2.get('id')), ST_PLACED,
+                                 'OCO: TP=' + fmt_price(tp_o) + ' | SL=' + fmt_price(sl_o))
+                    led.setdefault('pending_sells', set()).add(sym_c)
+                    log.info('OCO بومی صرافی برای %s ثبت شد (TP=%s | SL=%s)',
+                             sym_c, fmt_price(tp_o), fmt_price(sl_o))
+                else:
+                    log.error('ثبت OCO برای %s ناموفق (HTTP %s): %s — حفاظت SL/TP با خود ربات',
+                              sym_c, code2, str(data2)[:120])
+
+
 def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     row = a['best'][1]
     tf, sl, tp = row[1], row[9], row[10]
@@ -436,7 +467,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
         p = led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0, 'real_volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
         p['volume'] += vol
         p['real_volume'] = p.get('real_volume', 0.0) + vol
-        if st.use_exchange_oco:
+        if st.use_exchange_oco and st.order_type == 'market':
             code2, data2 = client.place_oco_sell(sym, vol, parse_price(tp), parse_price(sl))
             ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
             o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
@@ -641,7 +672,7 @@ def run(sh, st, rows, state=None):
     led = read_ledger(ws_t)
 
     if client and not dry:
-        sync_order_statuses(ws_t, led, client)
+        sync_order_statuses(ws_t, led, client, st)
         led = read_ledger(ws_t)  # خواندن مجدد پس از همگام‌سازی
 
     # ۰) اجرای خودکار حد ضرر/حد سود — با اولویت بالا، قبل از سیگنال‌ها
@@ -654,6 +685,11 @@ def run(sh, st, rows, state=None):
                if clean_oid(r[10]) not in ('', 'None', chr(8212))}
     api_count = client.trades_today(bot_order_ids=bot_ids) if (client and not dry) else 0
     led['daily_count'] = max(led['daily_count'], api_count or 0)
+    if not dry:
+        led['daily_count'] = max(api_count or 0, sum(
+            1 for _, rr in led['rows']
+            if rr[0].startswith(jtoday()) and rr[2].strip() in ('خرید', 'فروش')
+            and rr[11].strip() not in (ST_DRY, 'ناموفق')))
     log.info('معاملات امروز ربات: %d (اجراشده از API: %s)', led['daily_count'], api_count)
 
     cands = [s for s, a in agg.items() if is_buy_candidate(a)]
@@ -675,7 +711,11 @@ def run(sh, st, rows, state=None):
         led['daily_count'] += 1
 
     # ۲) خرید کاندیدها با احترام به همه سقف‌ها
-    open_pos = len(led['positions'])
+    if dry:
+        open_pos = len(led['positions'])
+    else:
+        open_pos = sum(1 for p in led['positions'].values()
+                       if (p.get('real_volume') or 0) > 1e-12)
     for sym in cands:
         a = agg[sym]
         if led['daily_count'] >= st.max_daily_trades:
