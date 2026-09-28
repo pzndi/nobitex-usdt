@@ -207,6 +207,16 @@ def make_client():
 
 
 # ================= ابزارها =================
+def clean_oid(v):
+    """شناسه سفارش تمیز: عدد صحیح بدون کاما/اعشار — "6,420,187,613.000" → "6420187613" """
+    if v in (None, ''):
+        return ''
+    try:
+        return str(int(round(float(str(v).replace(',', '')))))
+    except (TypeError, ValueError):
+        return str(v).strip()
+
+
 def parse_price(s):
     try:
         return float(str(s).replace(',', ''))
@@ -314,7 +324,7 @@ def read_ledger(ws):
             amt = 0.0
         if act not in ('خرید', 'فروش'):
             continue
-        if t.startswith(today):
+        if t.startswith(today) and status != 'ناموفق':
             led['daily_count'] += 1
         if status in OPENISH:
             led['pending'].add(sym)
@@ -419,7 +429,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     code, data = client.place_order('buy', sym, price, vol, st.order_type == 'market', client_order_id=coid)
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
-    oid = str(o.get('id') or (data.get('id') if isinstance(data, dict) else '') or '')
+    oid = clean_oid(o.get('id') if isinstance(o, dict) else None or (data.get('id') if isinstance(data, dict) else ''))
     if ok:
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
                      sl, tp, oid, ST_PLACED, str(data)[:80])
@@ -430,7 +440,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
             code2, data2 = client.place_oco_sell(sym, vol, parse_price(tp), parse_price(sl))
             ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
             o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
-            oid2 = str(o2.get('id') or '') if ok2 else ''
+            oid2 = clean_oid(o2.get('id')) if ok2 else ''
             if ok2:
                 record_trade(ws_t, 'فروش', sym, '', 'OCO حد سود/ضرر بومی صرافی',
                              tp, vol, round(vol * (parse_price(tp) or 0.0), 2),
@@ -515,7 +525,7 @@ def sell_one(st, ws_t, client, dry, sym, reason, price, vol, led):
     code, data = client.place_order('sell', sym, price, vol, st.order_type == 'market')
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
-    oid = str(o.get('id') or (data.get('id') if isinstance(data, dict) else '') or '')
+    oid = clean_oid(o.get('id') if isinstance(o, dict) else None or (data.get('id') if isinstance(data, dict) else ''))
     if ok:
         record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
                      '—', '—', oid, ST_PLACED, str(data)[:80] + pnl_msg)
@@ -640,8 +650,8 @@ def run(sh, st, rows, state=None):
 
     # شمارش روزانه: فقط معاملات خود ربات (تطبیق orderId با دفتر سفارشات)
     # معاملات دستی کاربر سهمیه ربات را مصرف نمی‌کند
-    bot_ids = {str(r[10]).strip() for _, r in led['rows']
-               if str(r[10]).strip() not in ('', 'None', chr(8212))}
+    bot_ids = {clean_oid(r[10]) for _, r in led['rows']
+               if clean_oid(r[10]) not in ('', 'None', chr(8212))}
     api_count = client.trades_today(bot_order_ids=bot_ids) if (client and not dry) else 0
     led['daily_count'] = max(led['daily_count'], api_count or 0)
     log.info('معاملات امروز ربات: %d (اجراشده از API: %s)', led['daily_count'], api_count)
