@@ -172,12 +172,17 @@ class NobitexClient:
                    'market': f'{symbol}USDT',
                    'srcCurrency': symbol.lower(),
                    'dstCurrency': 'usdt',
-                   'price': str(price),
-                   'amount': str(volume),
+                   'price': fmt_amt(price),
+                   'amount': fmt_amt(volume),
                    'execution': 'market' if is_market else 'limit'}
         if client_order_id:
             payload['clientOrderId'] = client_order_id
         return self._sc.post('/market/orders/add', payload)
+
+    def cancel_order(self, order_id):
+        """لغو سفارش — برای بازسازی OCO متحرک"""
+        return self._sc.post('/market/orders/update-status',
+                             {'orderId': str(order_id), 'status': 'cancelled'})
 
     def place_oco_sell(self, symbol, volume, take_profit, stop_price, stop_limit=None):
         """OCO فروش — حد سود (limit) + حد ضرر (stop-limit) بومی روی صرافی
@@ -189,12 +194,12 @@ class NobitexClient:
                    'market': f'{symbol}USDT',
                    'srcCurrency': symbol.lower(),
                    'dstCurrency': 'usdt',
-                   'price': str(take_profit),
-                   'amount': str(volume),
+                   'price': fmt_amt(take_profit),
+                   'amount': fmt_amt(volume),
                    'execution': 'limit',
                    'mode': 'oco',
-                   'stopPrice': str(stop_price),
-                   'stopLimitPrice': str(stop_limit)}
+                   'stopPrice': fmt_amt(stop_price),
+                   'stopLimitPrice': fmt_amt(stop_limit)}
         return self._sc.post('/market/orders/add', payload)
 
 
@@ -217,6 +222,12 @@ def clean_oid(v):
         return str(v).strip()
 
 
+def fmt_amt(v):
+    """فرمت مقدار/قیمت برای API — بدون نماد علمی، حداکثر ۸ رقم اعشار"""
+    s = f'{float(v):.8f}'.rstrip('0').rstrip('.')
+    return s if s else '0'
+
+
 def parse_price(s):
     try:
         return float(str(s).replace(',', ''))
@@ -234,32 +245,43 @@ def fmt_bal(v):
     return f'{v:.8f}'
 
 
-def currency_available(client, currency):
-    """موجودی قابل استفاده یک ارز از API (با تحمل تفاوت فرمت پاسخ)"""
-    currency = currency.lower()
-    code, data = client.wallet_balance(currency)
-    if code == 200 and isinstance(data, dict):
-        for k in ('activeBalance', 'balance'):
-            if data.get(k) not in (None, ''):
-                try:
-                    return float(data[k])
-                except (TypeError, ValueError):
-                    pass
+def currency_available(client, currency, use_active=True):
+    """موجودی یک ارز از API نوبیتکس.
+    use_active=True  → موجودی قابل استفاده (activeBalance) — ملاک اعتبارسنجی سفارش
+                       در صرافی؛ سفارش‌های باز موجودی را بلوکه می‌کنند (مثل PUMP)
+    use_active=False → موجودی کل (balance) — برای تشخیص وجود پوزیشن (reconcile)؛
+                       سکه‌های بلوکه‌شده زیر OCO خودِ پوزیشن، وجودش را حفظ می‌کنند
+    """
+    currency = str(currency).lower()
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
     code, data = client.wallets()
-    wl = data.get('wallets') if isinstance(data, dict) else (data if isinstance(data, list) else None)
+    wl = data.get('wallets') if isinstance(data, dict) else None
     if isinstance(wl, list):
         for w in wl:
-            if str(w.get('currency', '')).lower() == currency:
-                for k in ('activeBalance', 'active_balance', 'balance'):
-                    if w.get(k) not in (None, ''):
-                        try:
-                            return float(w[k])
-                        except (TypeError, ValueError):
-                            pass
+            if str(w.get('currency', '')).lower() != currency:
+                continue
+            tot = _f(w.get('balance'))
+            act = _f(w.get('activeBalance'))
+            blk = _f(w.get('blockedBalance')) or 0.0
+            if act is None and tot is not None:
+                act = max(tot - blk, 0.0)
+            if use_active:
+                return act if act is not None else tot
+            return tot
+    code, data = client.wallet_balance(currency)
+    if code == 200 and isinstance(data, dict):
+        v = _f(data.get('balance'))
+        if v is not None:
+            return v
     return None
 
 
-# ================= تجمیع سیگنال‌ها =================
 def aggregate_signals(rows):
     """رأی‌گیری بین تایم‌فریم‌ها برای هر نماد — rows همان ردیف‌های تب استراتژی"""
     agg = {}
@@ -423,9 +445,14 @@ def sync_order_statuses(ws_t, led, client, st=None):
             ws_t.update_cell(row_num, 12, new_st)
             if vol_update is not None:
                 ws_t.update_cell(row_num, 7, vol_update)
-            log.info('وضعیت سفارش %s → %s', oid, new_st)
+            log.info('وضعیت سفارش %s → %s', '|'.join(oids), new_st)
 
         sym_c = r[1].strip().upper()
+        if r[2].strip() == 'خرید' and new_st == ST_FILLED:
+            log.info('گذار خرید به پرشد %s | use_oco=%s | در pending_sells=%s',
+                     sym_c,
+                     (getattr(st, 'use_exchange_oco', None) if st is not None else None),
+                     sym_c in led.get('pending_sells', set()))
 
         # معامله واقعی بسته شد: فروش کامل پر شد → ثبت در «اتمام معاملات»
         if r[2].strip() == 'فروش' and new_st == ST_FILLED:
@@ -451,6 +478,9 @@ def sync_order_statuses(ws_t, led, client, st=None):
             if avail_o is not None:
                 vol_o = min(vol_o, avail_o)
             sl_o, tp_o = parse_price(r[8]), parse_price(r[9])
+            if vol_o <= 1e-12 or not sl_o or not tp_o:
+                log.warning('OCO در sync برای %s رد شد: vol=%s | sl=%s | tp=%s | matchedAmount=%s',
+                            sym_c, vol_o, sl_o, tp_o, o.get('matchedAmount'))
             if vol_o > 1e-12 and sl_o and tp_o:
                 code2, data2 = client.place_oco_sell(sym_c, vol_o, tp_o, sl_o)
                 ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
@@ -640,24 +670,112 @@ def exit_position(st, ws_t, client, sym, reason, price, led):
     led['positions'].pop(sym, None)
 
 
-def apply_trailing(st, ws_t, led, prices):
-    """SL/TP داینامیک — با رشد قیمت، SL به بالا کشیده می‌شود (قفل سود، ریسک کم)"""
+def apply_trailing(st, ws_t, led, prices, client=None):
+    """SL/TP داینامیک — با رشد قیمت SL بالا کشیده می‌شود (قفل سود)
+
+    پوزیشن واقعیِ دارای OCO باز روی صرافی:
+      - هم‌راستاسازی: SL شیت هرگز بالاتر از SL واقعی صرافی نمی‌ماند
+      - SL جدید > SL صرافی × 1.005 → لغو OCO قبلی + ثبت OCO جدید با SL بالاتر
+      - شکست جایگزینی → حفاظت به SL/TP خود ربات برمی‌گردد
+    """
     if not st.trail_enabled:
         return
     for sym, p in list(led['positions'].items()):
         entry, sl, price = p.get('entry_price'), p.get('sl'), prices.get(sym)
         if not (entry and sl and price):
             continue
-        if price >= entry * (1 + st.trail_activation_pct / 100.0):
-            new_sl = price * (1 - st.trail_distance_pct / 100.0)
-            if new_sl > sl:
-                p['sl'] = new_sl
-                for row_num, rr in led['rows']:
-                    if (rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
-                            and rr[11].strip() in EXECUTED):
-                        ws_t.update_cell(row_num, 9, fmt_price(new_sl))
-                        break
-                log.info('SL متحرک %s: %s -> %s', sym, fmt_price(sl), fmt_price(new_sl))
+        if price < entry * (1 + st.trail_activation_pct / 100.0):
+            continue
+
+        oco_row = next(((rn, rr) for rn, rr in led['rows']
+                        if 'OCO' in str(rr[4]) and rr[1].strip().upper() == sym
+                        and rr[11].strip() in OPENISH), None)
+        has_oco = sym in led.get('pending_sells', set()) and oco_row is not None
+        oco_sl = parse_price(oco_row[1][8]) if oco_row else None
+
+        def set_sheet_sl(v):
+            for row_num, rr in led['rows']:
+                if (rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
+                        and rr[11].strip() in EXECUTED):
+                    ws_t.update_cell(row_num, 9, fmt_price(v))
+                    break
+
+        # هم‌راستاسازی: SL شیت (از تریلینگ قدیمی فقط-شیت) بالاتر از واقعیت صرافی نباشد
+        if has_oco and oco_sl is not None and sl > oco_sl:
+            p['sl'] = oco_sl
+            sl = oco_sl
+            set_sheet_sl(oco_sl)
+            log.info('SL شیت %s به SL واقعی صرافی هم‌راستا شد: %s', sym, fmt_price(oco_sl))
+
+        new_sl = price * (1 - st.trail_distance_pct / 100.0)
+        if new_sl <= sl:
+            continue
+
+        if has_oco and oco_sl is not None and new_sl <= oco_sl * 1.005:
+            p['sl'] = oco_sl
+            set_sheet_sl(oco_sl)
+            continue
+        if has_oco:
+            if client is None or (p.get('real_volume') or 0) <= 1e-12:
+                continue
+            old_ids = [clean_oid(x) for x in str(oco_row[1][10]).split('|')
+                       if clean_oid(x) and clean_oid(x) != chr(8212)]
+            cancel_ok = bool(old_ids)
+            for oid in old_ids:
+                code_c, data_c = client.cancel_order(oid)
+                ok_c = (code_c == 200 and (not isinstance(data_c, dict)
+                                           or data_c.get('status') != 'failed'))
+                if not ok_c:
+                    cancel_ok = False
+                    log.error('لغو پایه OCO %s ناموفق: HTTP %s | %s',
+                              oid, code_c, str(data_c)[:100])
+            if not cancel_ok:
+                log.error('OCO %s دست‌نخورده ماند — SL صرافی همان %s است',
+                          sym, fmt_price(oco_sl))
+                p['sl'] = oco_sl or sl
+                continue
+            ws_t.update_cell(oco_row[0], 12, ST_CANCELLED)
+            vol_o = p['real_volume']
+            avail = currency_available(client, sym)
+            if avail is not None:
+                vol_o = min(vol_o, avail)
+            tp_o = p.get('tp')
+            if not (vol_o > 1e-12 and tp_o):
+                led['pending_sells'].discard(sym)
+                log.error('OCO متحرک %s: حجم/TP نامعتبر — حفاظت با خود ربات', sym)
+                continue
+            code2, data2 = client.place_oco_sell(sym, vol_o, tp_o, new_sl)
+            ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+            if not ok2:
+                led['pending_sells'].discard(sym)
+                log.error('ثبت OCO متحرک %s ناموفق: HTTP %s | %s — حفاظت با خود ربات',
+                          sym, code2, str(data2)[:120])
+                continue
+            o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
+            leg_ids = []
+            if isinstance(o2, dict):
+                for _k in ('id', 'pairId', 'orderId'):
+                    if o2.get(_k):
+                        leg_ids.append(clean_oid(o2.get(_k)))
+            if isinstance(data2, dict) and isinstance(data2.get('orders'), list):
+                for _lg in data2['orders']:
+                    if isinstance(_lg, dict):
+                        for _k in ('id', 'pairId', 'orderId'):
+                            if _lg.get(_k):
+                                leg_ids.append(clean_oid(_lg.get(_k)))
+            oid_new = '|'.join(dict.fromkeys(leg_ids))
+            record_trade(ws_t, 'فروش', sym, '', 'OCO متحرک (SL بالاتر)',
+                         fmt_price(tp_o), vol_o, round(vol_o * tp_o, 2),
+                         fmt_price(new_sl), fmt_price(tp_o), oid_new, ST_PLACED,
+                         'SL: ' + fmt_price(new_sl))
+            p['sl'] = new_sl
+            set_sheet_sl(new_sl)
+            log.info('OCO متحرک %s: SL %s -> %s (بازسازی روی صرافی)',
+                     sym, fmt_price(oco_sl or sl), fmt_price(new_sl))
+            continue
+        p['sl'] = new_sl
+        set_sheet_sl(new_sl)
+        log.info('SL متحرک %s: %s -> %s', sym, fmt_price(sl), fmt_price(new_sl))
 
 
 def write_ranking(sh, st, rows, led, bt_params=None):
@@ -710,7 +828,7 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
         rv = p.get('real_volume') or 0.0
         if rv <= 1e-12:
             continue
-        avail = currency_available(client, sym)
+        avail = currency_available(client, sym, use_active=False)
         if avail is None or avail >= rv * 0.5:
             continue
         price = prices.get(sym) or _public_price(sym) or p.get('entry_price') or 0.0
@@ -732,6 +850,66 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
         led['pending'].discard(sym)
 
 
+def backfill_oco(st, ws_t, client, led, prices):
+    """تور ایمنی OCO: هر پوزیشن واقعی (بالای غبار) که سفارش فروش باز ندارد،
+    OCO با SL/TP همان پوزیشن می‌گیرد — جبران خودکار هر جاافتادگی، هر چرخه.
+    اگر قیمت خارج از بازه SL..TP باشد، OCO معنا ندارد و خروج به check_sl_tp واگذار می‌شود."""
+    if not (client and getattr(st, 'use_exchange_oco', False)):
+        return
+    for sym, p in list(led['positions'].items()):
+        rv = p.get('real_volume') or 0.0
+        if rv <= 1e-12 or sym in led.get('pending_sells', set()):
+            continue
+        sl, tp = p.get('sl'), p.get('tp')
+        if not (sl and tp):
+            continue
+        price = prices.get(sym)
+        if price is None:
+            price = _public_price(sym)
+            if price:
+                prices[sym] = price
+        if price is None:
+            log.warning('OCO تور ایمنی %s: قیمت لحظه‌ای در دسترس نیست', sym)
+            continue
+        if not (sl < price < tp):
+            log.info('OCO تور ایمنی %s رد شد: قیمت %s خارج از بازه SL..TP — خروج با check_sl_tp',
+                     sym, fmt_price(price))
+            continue
+        vol_o = rv
+        avail = currency_available(client, sym)
+        if avail is not None:
+            vol_o = min(vol_o, avail)
+        if vol_o <= 1e-12:
+            log.warning('OCO تور ایمنی %s: موجودی فعال صرافی صفر است', sym)
+            continue
+        code2, data2 = client.place_oco_sell(sym, vol_o, tp, sl)
+        ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+        if not ok2:
+            log.error('OCO تور ایمنی %s ناموفق: HTTP %s | %s — حفاظت با خود ربات',
+                      sym, code2, str(data2)[:120])
+            continue
+        o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
+        leg_ids = []
+        if isinstance(o2, dict):
+            for _k in ('id', 'pairId', 'orderId'):
+                if o2.get(_k):
+                    leg_ids.append(clean_oid(o2.get(_k)))
+        if isinstance(data2, dict) and isinstance(data2.get('orders'), list):
+            for _lg in data2['orders']:
+                if isinstance(_lg, dict):
+                    for _k in ('id', 'pairId', 'orderId'):
+                        if _lg.get(_k):
+                            leg_ids.append(clean_oid(_lg.get(_k)))
+        record_trade(ws_t, 'فروش', sym, '', 'OCO تور ایمنی (جبران)',
+                     fmt_price(tp), vol_o, round(vol_o * tp, 2),
+                     fmt_price(sl), fmt_price(tp),
+                     '|'.join(dict.fromkeys(leg_ids)), ST_PLACED,
+                     'SL=' + fmt_price(sl) + ' | TP=' + fmt_price(tp))
+        led.setdefault('pending_sells', set()).add(sym)
+        log.info('OCO تور ایمنی %s ثبت شد (SL=%s | TP=%s)',
+                 sym, fmt_price(sl), fmt_price(tp))
+
+
 def run(sh, st, rows, state=None):
     dry = st.dry_run
     log.info('ماژول معاملات فعال — حالت: %s', 'شبیه‌سازی (DRY-RUN)' if dry else '⚠️ سفارش واقعی')
@@ -750,9 +928,11 @@ def run(sh, st, rows, state=None):
         led = read_ledger(ws_t, st.dust_usdt)  # خواندن مجدد پس از همگام‌سازی
     if client:
         reconcile_real_positions(st, ws_t, client, led, prices)
+    if client:
+        backfill_oco(st, ws_t, client, led, prices)
 
     # ۰) اجرای خودکار حد ضرر/حد سود — با اولویت بالا، قبل از سیگنال‌ها
-    apply_trailing(st, ws_t, led, prices)
+    apply_trailing(st, ws_t, led, prices, client)
     check_sl_tp(st, ws_t, client, dry, led, prices)
 
     # شمارش روزانه: فقط معاملات خود ربات (تطبیق orderId با دفتر سفارشات)
@@ -765,7 +945,8 @@ def run(sh, st, rows, state=None):
         led['daily_count'] = max(api_count or 0, sum(
             1 for _, rr in led['rows']
             if rr[0].startswith(jtoday()) and rr[2].strip() in ('خرید', 'فروش')
-            and rr[11].strip() not in (ST_DRY, 'ناموفق')))
+            and rr[11].strip() not in (ST_DRY, 'ناموفق')
+            and 'OCO' not in str(rr[4])))
     log.info('معاملات امروز ربات: %d (اجراشده از API: %s)', led['daily_count'], api_count)
 
     cands = [s for s, a in agg.items() if is_buy_candidate(a)]
@@ -775,6 +956,13 @@ def run(sh, st, rows, state=None):
     for sym in list(led['positions']):
         a = agg.get(sym)
         if not (a and is_sell_candidate(a)):
+            continue
+        if sym in led.get('pending_sells', set()):
+            log.info('فروش سیگنالی %s رد شد: OCO بومی باز است — خروج با صرافی', sym)
+        if sym in led.get('pending_sells', set()):
+            log.info('فروش سیگنالی %s رد شد: OCO بومی باز است — خروج با صرافی', sym)
+            continue
+            log.info('فروش سیگنالی %s رد شد: OCO بومی باز است — خروج با صرافی', sym)
             continue
         if led['daily_count'] >= st.max_daily_trades:
             log.info('فروش %s انجام نشد: سقف معاملات روزانه', sym)
