@@ -53,24 +53,42 @@ def fetch_stats(retries=3):
     return None
 
 
+def _num_field(s, keys):
+    """اولین فیلد غیرصفر از فهرست نام‌های ممکن (مقادیر رشته‌ای API هم تبدیل می‌شوند)"""
+    for k in keys:
+        try:
+            v = float(s.get(k) or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v != 0:
+            return v
+    return 0.0
+
+
 def rank_markets(stats, st):
-    """فیلتر و رتبه‌بندی بازارهای USDT بر اساس نقدشوندگی (حجم / اسپرد)"""
+    """فیلتر و رتبه‌بندی بازارهای USDT بر اساس نقدشوندگی (حجم USDT / اسپرد)
+
+    نام فیلدها در apiv2 نوبیتکس: حجم USDT → volumeDst ، تغییر روزانه → dayChange
+    (نام‌های جایگزین هم برای مقاومت بررسی می‌شوند)
+    """
     out = []
     for name, s in stats.items():
         lname = str(name).lower()
         if not lname.endswith('-usdt'):
             continue
+        if s.get('isClosed'):
+            continue
         try:
-            if s.get('isClosed'):
-                continue
             best_sell = float(s.get('bestSell') or 0)
             best_buy = float(s.get('bestBuy') or 0)
-            vol = float(s.get('volumeQuote') or 0)
-            change = float(s.get('volumeChange') or 0)
         except (TypeError, ValueError):
             continue
-        if best_sell <= 0 or best_buy <= 0 or vol < st.min_volume:
+        if best_sell <= 0 or best_buy <= 0:
             continue
+        vol = _num_field(s, ('volumeDst', 'volumeQuote', 'volume'))
+        if vol < st.min_volume:
+            continue
+        change = _num_field(s, ('dayChange', 'change', 'volumeChange'))
         spread = (best_sell - best_buy) / best_sell * 100.0
         out.append({'symbol': lname[:-5].upper(), 'name': name, 'volume': vol,
                     'spread': spread, 'change': change,
