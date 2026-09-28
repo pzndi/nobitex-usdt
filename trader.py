@@ -89,6 +89,13 @@ def record_closed(ws_t, sym, entry_time, entry_price, exit_price, vol, reason, m
 
 
 # ================= کلاینت API معاملاتی =================
+def record_trade(ws_t, action, sym, tf, reason, price, volume, amount, sl, tp, oid, status, msg):
+    """ثبت سفارش در دفتر «سفارشات» — هر سفارش یک ردیف"""
+    ws_t.append_row([jnow(), sym, action, tf, reason, price, volume, amount,
+                     sl, tp, oid, status, msg])
+    log.info('سفارش ثبت شد: %s %s | %s @ %s | %s', action, sym, volume, price, status)
+
+
 class NobitexClient:
     """پوشش امضاشده روی API معاملاتی — Nobitex-Key/Signature/Timestamp
     (امضای Ed25519 روی timestamp+METHOD+full_path+raw_body طبق مستندات رسمی apiv2)"""
@@ -264,15 +271,17 @@ def is_sell_candidate(a):
 
 # ================= دفتر معاملات (حافظه ربات) =================
 def read_ledger(ws):
-    """خواندن دفتر معاملات:
-    - پوزیشن‌های باز با میانگین قیمت ورود (حسابداری به روش میانگین هزینه) و آخرین حد ضرر/سود
-    - سفارش‌های باز، شمارش معاملات امروز (شمسی)، خالص خرج شبیه‌سازی
+    """خواندن دفتر سفارش‌ها:
+    - پوزیشن‌های باز با میانگین قیمت ورود، آخرین SL/TP و تفکیک حجم واقعی/شبیه‌سازی
+      (شبیه‌سازی = ردیف‌های «شبیه‌سازی شده»؛ واقعی = «پر شد/بخشی پر»)
+    - سفارش‌های باز، شمارش امروز (شمسی)، خالص خرج شبیه‌سازی
     """
     vals = ws.get_all_values()
-    led = {'positions': {}, 'pending': set(), 'pending_sells': set(), 'daily_count': 0,
-           'dry_net_spent': 0.0, 'rows': []}
+    led = {'positions': {}, 'pending': set(), 'pending_sells': set(),
+           'daily_count': 0, 'dry_net_spent': 0.0, 'rows': []}
     today = jtoday()
-    bought_vol, bought_cost, sold_vol = {}, {}, {}
+    bought = {}   # sym -> [حجم کل، هزینه کل، حجم شبیه‌سازی]
+    sold = {}     # sym -> [حجم کل، حجم شبیه‌سازی]
     sltp = {}
     for i, r in enumerate(vals[3:]):  # داده از ردیف ۴
         if not any(str(c).strip() for c in r):
@@ -298,25 +307,35 @@ def read_ledger(ws):
             if act == 'فروش':
                 led['pending_sells'].add(sym)
         if status in EXECUTED:
+            is_sim = (status == ST_DRY)
             if act == 'خرید':
-                bought_vol[sym] = bought_vol.get(sym, 0.0) + vol
-                bought_cost[sym] = bought_cost.get(sym, 0.0) + amt
-                if status == ST_DRY:
+                b = bought.setdefault(sym, [0.0, 0.0, 0.0])
+                b[0] += vol
+                b[1] += amt
+                if is_sim:
+                    b[2] += vol
                     led['dry_net_spent'] += amt
                 sl_p, tp_p = parse_price(r[8]), parse_price(r[9])
                 if sl_p and tp_p:
                     sltp[sym] = (sl_p, tp_p)
             else:
-                sold_vol[sym] = sold_vol.get(sym, 0.0) + vol
-                if status == ST_DRY:
+                s_ = sold.setdefault(sym, [0.0, 0.0])
+                s_[0] += vol
+                if is_sim:
+                    s_[1] += vol
                     led['dry_net_spent'] -= amt
-    for sym in set(list(bought_vol) + list(sold_vol)):
-        net = bought_vol.get(sym, 0.0) - sold_vol.get(sym, 0.0)
+    for sym in set(list(bought) + list(sold)):
+        b = bought.get(sym, [0.0, 0.0, 0.0])
+        s_ = sold.get(sym, [0.0, 0.0])
+        net = b[0] - s_[0]
         if net > 1e-12:
-            entry = (bought_cost[sym] / bought_vol[sym]) if bought_vol.get(sym) else None
+            sim_net = max(0.0, min(b[2] - s_[1], net))
+            entry = (b[1] / b[0]) if b[0] else None
             sl, tp = sltp.get(sym, (None, None))
-            led['positions'][sym] = {'volume': net, 'entry_price': entry,
-                                     'sl': sl, 'tp': tp}
+            led['positions'][sym] = {'volume': net,
+                                     'sim_volume': sim_net,
+                                     'real_volume': net - sim_net,
+                                     'entry_price': entry, 'sl': sl, 'tp': tp}
     return led
 
 
@@ -379,8 +398,9 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
                      sl, tp, '—', ST_DRY, 'شبیه‌سازی — بدون ارسال به صرافی')
         led['dry_net_spent'] += amount
-        p = led['positions'].setdefault(sym, {'volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
+        p = led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0, 'real_volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
         p['volume'] += vol
+        p['sim_volume'] = p.get('sim_volume', 0.0) + vol
         return
     code, data = client.place_order('buy', sym, price, vol, st.order_type == 'market', client_order_id=coid)
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
@@ -389,8 +409,9 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     if ok:
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
                      sl, tp, oid, ST_PLACED, str(data)[:80])
-        p = led['positions'].setdefault(sym, {'volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
+        p = led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0, 'real_volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
         p['volume'] += vol
+            p['real_volume'] = p.get('real_volume', 0.0) + vol
         if st.use_exchange_oco:
             code2, data2 = client.place_oco_sell(sym, vol, parse_price(tp), parse_price(sl))
             ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
@@ -442,8 +463,8 @@ def find_sl_tp_exits(positions, prices):
 
 def check_sl_tp(st, ws_t, client, dry, led, prices):
     """اجرای خودکار حد ضرر/حد سود — اولویت بالاتر از سیگنال‌ها
-    نکته: خروج‌ها سقف MAX_DAILY_TRADES را دور می‌زنند (مدیریت ریسک‌اند، نه معامله جدید)"""
-    for sym in led['positions']:          # قیمت نمادهای خارج‌شده از تاپ ۱۰
+    (خروج‌ها سقف روزانه را دور می‌زنند — مدیریت ریسک‌اند، نه معامله جدید)"""
+    for sym in led['positions']:
         if prices.get(sym) is None:
             px = _public_price(sym)
             if px:
@@ -454,32 +475,28 @@ def check_sl_tp(st, ws_t, client, dry, led, prices):
         return
     log.info('خروج‌های فعال: %s', '، '.join(f'{s} ({w})' for s, w, _ in exits))
     for sym, why, price in exits:
-        vol = led['positions'][sym]['volume']
-        if not dry:
-            avail = currency_available(client, sym)
-            if avail is None:
-                log.warning('خروج %s انجام نشد: موجودی از API قابل دریافت نیست', sym)
-                continue
-            vol = min(vol, avail)
-        sell_one(st, ws_t, client, dry, sym, why, price, vol, led)
+        exit_position(st, ws_t, client, sym, why, price, led)
 
 
 def sell_one(st, ws_t, client, dry, sym, reason, price, vol, led):
-    """فروش/خروج — با محاسبه سود و زیان بر اساس میانگین قیمت ورود"""
+    """فروش حجم مشخص — dry=True فقط در دفتر ثبت می‌کند
+    (خروج کامل پوزیشن از exit_position انجام می‌شود)"""
+    if not vol or vol <= 1e-12:
+        log.warning('فروش %s رد شد: حجم صفر است', sym)
+        return
     amount = round(vol * price, 2)
     pos = led['positions'].get(sym) or {}
     entry = pos.get('entry_price')
     pnl = round(vol * price - vol * entry, 2) if entry else None
     pnl_msg = f' | P&L: {pnl:+.2f} USDT' if pnl is not None else ''
+    e_time = next((rr[0] for _, rr in led['rows']
+                   if rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
+                   and rr[11].strip() in EXECUTED), '—')
     if dry:
         record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
                      '—', '—', '—', ST_DRY, 'شبیه‌سازی — بدون ارسال به صرافی' + pnl_msg)
-        e_time = next((rr[0] for _, rr in led['rows']
-                   if rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
-                   and rr[11].strip() in EXECUTED), '—')
         record_closed(ws_t, sym, e_time, entry or price, price, vol, reason, 'شبیه‌سازی')
         led['dry_net_spent'] -= amount
-        led['positions'].pop(sym, None)
         return
     code, data = client.place_order('sell', sym, price, vol, st.order_type == 'market')
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
@@ -488,14 +505,43 @@ def sell_one(st, ws_t, client, dry, sym, reason, price, vol, led):
     if ok:
         record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
                      '—', '—', oid, ST_PLACED, str(data)[:80] + pnl_msg)
-        led['positions'].pop(sym, None)
     else:
         log.error('ثبت سفارش واقعی فروش %s ناموفق: HTTP %s | %s', sym, code, str(data)[:150])
         record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
                      '—', '—', '', 'ناموفق', str(data)[:100])
 
 
-# ================= نقطه ورود اصلی =================
+def exit_position(st, ws_t, client, sym, reason, price, led):
+    """خروج کامل از پوزیشن — جداکننده بخش واقعی و شبیه‌سازی:
+    بخش واقعی تا سقف موجودی واقعی صرافی فروخته می‌شود؛
+    بخش شبیه‌سازی فقط در دفتر بسته می‌شود (مستقل از DRY_RUN)."""
+    pos = led['positions'].get(sym)
+    if not pos:
+        return
+    sim_vol = max(pos.get('sim_volume') or 0.0, 0.0)
+    real_vol = max(pos.get('real_volume') or 0.0, 0.0)
+    if real_vol > 1e-12:
+        if client is None:
+            log.error('خروج واقعی %s ممکن نیست: کلاینت API ساخته نشده است', sym)
+        else:
+            v = real_vol
+            avail = currency_available(client, sym)
+            if avail is not None:
+                v = min(real_vol, avail)
+            if v > 1e-12:
+                sell_one(st, ws_t, client, False, sym, reason, price, v, led)
+            else:
+                log.warning('بخش واقعی %s فروخته نشد: موجودی صرافی صفر است', sym)
+                dup = any(rr[1].strip().upper() == sym and rr[11].strip() == 'ناموفق'
+                          and rr[0].startswith(jtoday()) for _, rr in led['rows'])
+                if not dup:
+                    record_trade(ws_t, 'فروش', sym, '', reason + ' (بخش واقعی)',
+                                 fmt_price(price), real_vol, round(real_vol * price, 2),
+                                 '—', '—', '', 'ناموفق', 'موجودی صرافی برای فروش کافی نیست')
+    if sim_vol > 1e-12:
+        sell_one(st, ws_t, client, True, sym, reason, price, sim_vol, led)
+    led['positions'].pop(sym, None)
+
 
 def apply_trailing(st, ws_t, led, prices):
     """SL/TP داینامیک — با رشد قیمت، SL به بالا کشیده می‌شود (قفل سود، ریسک کم)"""
@@ -597,15 +643,8 @@ def run(sh, st, rows, state=None):
         p = prices.get(sym) or _public_price(sym)
         if not p:
             continue
-        vol = led['positions'][sym]['volume']
-        if not dry:
-            avail = currency_available(client, sym)
-            if avail is None:
-                log.warning('فروش %s انجام نشد: موجودی کیف پول از API قابل دریافت نیست', sym)
-                continue
-            vol = min(vol, avail)
-        sell_one(st, ws_t, client, dry, sym,
-                 f"سیگنال فروش {a['sells']}/{a['total']} تایم‌فریم", p, vol, led)
+        exit_position(st, ws_t, client, sym,
+                      f"سیگنال فروش {a['sells']}/{a['total']} تایم‌فریم", p, led)
         led['daily_count'] += 1
 
     # ۲) خرید کاندیدها با احترام به همه سقف‌ها
