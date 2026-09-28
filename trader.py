@@ -1,0 +1,499 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+trader.py — ماژول معاملات ربات
+- احراز هویت نوبیتکس: هدر Authorization: Token <KEY> (کلید فقط از .env)
+- تب «کیف پول»: مستقیم از API صرافی
+- همگام‌سازی وضعیت سفارش‌های واقعی از API → ستون «وضعیت» تب معاملات
+- انتخاب نماد: رأی‌گیری بین تایم‌فریم‌ها (حداقل ۲ تایم‌فریم + اکثریت + بیشتر از فروش)
+- سقف‌های ایمنی: MAX_DAILY_TRADES / MAX_OPEN_POSITIONS / MIN_USDT_BALANCE
+
+وضعیت‌های دفتر معاملات:
+  شبیه‌سازی شده = سفارش dry-run (بدون ارسال به صرافی — اجرا شده فرض می‌شود)
+  ثبت‌شده = سفارش واقعی ثبت شده، در انتظار تأیید وضعیت از API
+  باز / پر شد / بخشی پر شد / لغو شده = وضعیت واقعی از API
+  ناموفق = خطای API هنگام ثبت سفارش واقعی
+"""
+import logging
+import math
+import sys
+from datetime import datetime
+
+import requests
+
+from settings import load_env
+from strategy_engine import fmt_price
+
+try:
+    import jdatetime
+
+    def jnow():
+        return jdatetime.datetime.now().strftime('%Y/%m/%d %H:%M')
+
+    def jtoday():
+        return jdatetime.date.today().strftime('%Y/%m/%d')
+except ImportError:
+    def jnow():
+        return datetime.now().strftime('%Y-%m-%d %H:%M')
+
+    def jtoday():
+        return datetime.now().strftime('%Y-%m-%d')
+
+log = logging.getLogger('nobitex-bot')
+
+BASE = 'https://apiv2.nobitex.ir'
+TIMEOUT = 60
+
+TRADES_TAB = 'معاملات'
+WALLET_TAB = 'کیف پول'
+UNIVERSE_TAB = 'dynamic universe'
+
+ST_DRY = 'شبیه‌سازی شده'
+ST_PLACED = 'ثبت‌شده'
+ST_OPEN = 'باز'
+ST_FILLED = 'پر شد'
+ST_PARTIAL = 'بخشی پر شد'
+ST_CANCELLED = 'لغو شده'
+EXECUTED = {ST_DRY, ST_FILLED, ST_PARTIAL}
+OPENISH = {ST_PLACED, ST_OPEN, ST_PARTIAL}
+
+MIN_TFS = 2  # حداقل تعداد تایم‌فریم هم‌جهت برای صدور سفارش
+
+
+# ================= کلاینت API معاملاتی =================
+class NobitexClient:
+    def __init__(self, api_key):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'Authorization': f'Token {api_key}',
+            'Content-Type': 'application/json',
+            'User-Agent': 'nobitex-sheet-updater/2.0',
+        })
+
+    def _call(self, method, path, payload=None, params=None):
+        r = self.session.request(method, f'{BASE}/{path}',
+                                 json=payload, params=params, timeout=TIMEOUT)
+        try:
+            return r.status_code, r.json()
+        except ValueError:
+            return r.status_code, {'raw': r.text[:200]}
+
+    def wallets(self):
+        code, data = self._call('POST', 'users/wallets/list', {})
+        if code != 200:
+            code, data = self._call('GET', 'users/wallets/list')
+        return code, data
+
+    def wallet_balance(self, currency):
+        return self._call('POST', 'users/wallets/balance', {'wallet': currency.lower()})
+
+    def open_orders(self):
+        code, data = self._call('POST', 'market/orders/list', {'status': 'open'})
+        if code != 200:
+            code, data = self._call('POST', 'market/orders/list', {})
+        return code, data
+
+    def order_status(self, order_id):
+        code, data = self._call('POST', 'market/orders/status', {'id': str(order_id)})
+        if code != 200:
+            code, data = self._call('GET', 'market/orders/status', params={'id': str(order_id)})
+        return code, data
+
+    def place_order(self, order_type, symbol, price, volume, is_market):
+        payload = {'type': order_type,
+                   'market': f'{symbol}USDT',
+                   'price': str(price),
+                   'volume': str(volume),
+                   'srcCurrency': symbol.lower(),
+                   'dstCurrency': 'usdt',
+                   'mode': 'market' if is_market else 'limit'}
+        return self._call('POST', 'market/orders/add', payload)
+
+
+# ================= ابزارها =================
+def parse_price(s):
+    try:
+        return float(str(s).replace(',', ''))
+    except (TypeError, ValueError):
+        return None
+
+
+def fmt_bal(v):
+    if v == 0:
+        return '0'
+    if v >= 1000:
+        return f'{v:,.2f}'
+    if v >= 1:
+        return f'{v:.4f}'
+    return f'{v:.8f}'
+
+
+def currency_available(client, currency):
+    """موجودی قابل استفاده یک ارز از API (با تحمل تفاوت فرمت پاسخ)"""
+    currency = currency.lower()
+    code, data = client.wallet_balance(currency)
+    if code == 200 and isinstance(data, dict):
+        for k in ('activeBalance', 'balance'):
+            if data.get(k) not in (None, ''):
+                try:
+                    return float(data[k])
+                except (TypeError, ValueError):
+                    pass
+    code, data = client.wallets()
+    wl = data.get('wallets') if isinstance(data, dict) else (data if isinstance(data, list) else None)
+    if isinstance(wl, list):
+        for w in wl:
+            if str(w.get('currency', '')).lower() == currency:
+                for k in ('activeBalance', 'active_balance', 'balance'):
+                    if w.get(k) not in (None, ''):
+                        try:
+                            return float(w[k])
+                        except (TypeError, ValueError):
+                            pass
+    return None
+
+
+# ================= تجمیع سیگنال‌ها =================
+def aggregate_signals(rows):
+    """رأی‌گیری بین تایم‌فریم‌ها برای هر نماد — rows همان ردیف‌های تب استراتژی"""
+    agg = {}
+    for r in rows:
+        if len(r) < 11 or not r[0]:
+            continue
+        sym = str(r[0]).upper()
+        a = agg.setdefault(sym, {'buys': 0, 'sells': 0, 'total': 0, 'best': None})
+        a['total'] += 1
+        sig = str(r[4]).strip()
+        if sig == 'خرید':
+            a['buys'] += 1
+            try:
+                strength = int(float(r[5]))
+            except (TypeError, ValueError):
+                strength = 0
+            if not a['best'] or strength > a['best'][0]:
+                a['best'] = (strength, list(r))
+        elif sig == 'فروش':
+            a['sells'] += 1
+    return agg
+
+
+def is_buy_candidate(a):
+    return (a['buys'] >= MIN_TFS and a['buys'] >= (a['total'] + 1) // 2
+            and a['buys'] > a['sells'])
+
+
+def is_sell_candidate(a):
+    return (a['sells'] >= MIN_TFS and a['sells'] >= (a['total'] + 1) // 2
+            and a['sells'] > a['buys'])
+
+
+# ================= دفتر معاملات (حافظه ربات) =================
+def read_ledger(ws):
+    """خواندن تب معاملات: پوزیشن‌های باز، سفارش‌های باز، شمارش امروز، موجودی شبیه‌سازی"""
+    vals = ws.get_all_values()
+    led = {'positions': {}, 'pending': set(), 'daily_count': 0,
+           'dry_net_spent': 0.0, 'rows': []}
+    today = jtoday()
+    buys, sells = {}, {}
+    for i, r in enumerate(vals[3:]):  # داده از ردیف ۴
+        if not any(str(c).strip() for c in r):
+            continue
+        r = list(r) + [''] * (13 - len(r))
+        led['rows'].append((i + 4, r))
+        t, sym, act = r[0].strip(), r[1].strip().upper(), r[2].strip()
+        status = r[11].strip()
+        try:
+            vol = float(str(r[6]).replace(',', '') or 0)
+        except ValueError:
+            vol = 0.0
+        try:
+            amt = float(str(r[7]).replace(',', '') or 0)
+        except ValueError:
+            amt = 0.0
+        if act not in ('خرید', 'فروش'):
+            continue
+        if t.startswith(today):
+            led['daily_count'] += 1
+        if status in OPENISH:
+            led['pending'].add(sym)
+        if status in EXECUTED:
+            if act == 'خرید':
+                b = buys.setdefault(sym, 0.0)
+                buys[sym] = b + vol
+                if status == ST_DRY:
+                    led['dry_net_spent'] += amt
+            else:
+                s = sells.setdefault(sym, 0.0)
+                sells[sym] = s + vol
+                if status == ST_DRY:
+                    led['dry_net_spent'] -= amt
+    for sym in set(list(buys) + list(sells)):
+        net = buys.get(sym, 0.0) - sells.get(sym, 0.0)
+        if net > 1e-12:
+            led['positions'][sym] = {'volume': net}
+    return led
+
+
+def record_trade(ws, action, sym, tf, reason, price, volume, amount, sl, tp, oid, status, msg):
+    ws.append_row([jnow(), sym, action, tf, reason, price, volume, amount,
+                   sl, tp, oid, status, msg])
+    log.info('دفتر معاملات ← %s %s | %s @ %s | وضعیت: %s', action, sym, volume, price, status)
+
+
+# ================= همگام‌سازی وضعیت از API =================
+def sync_order_statuses(ws_t, led, client):
+    """وضعیت سفارش‌های واقعی (ثبت‌شده/باز) را از API می‌خواند و در شیت به‌روز می‌کند"""
+    mapping = {'open': ST_OPEN, 'done': ST_FILLED, 'canceled': ST_CANCELLED, 'partial': ST_PARTIAL}
+    for row_num, r in led['rows']:
+        oid = str(r[10]).strip()
+        if not oid or oid == '—' or str(r[11]).strip() not in OPENISH:
+            continue
+        code, data = client.order_status(oid)
+        o = data.get('order') if isinstance(data, dict) else None
+        raw = o.get('status') if isinstance(o, dict) else None
+        if raw is None and isinstance(data, dict):
+            cand = data.get('orderStatus')
+            if cand in mapping:
+                raw = cand
+        if raw in mapping:
+            if mapping[raw] != str(r[11]).strip():
+                ws_t.update_cell(row_num, 12, mapping[raw])
+                log.info('وضعیت سفارش %s → %s', oid, mapping[raw])
+        else:
+            log.warning('وضعیت سفارش %s قابل تشخیص نبود: HTTP %s | %s', oid, code, str(data)[:120])
+
+
+# ================= اجرای سفارش =================
+def buy_one(st, ws_t, client, dry, sym, a, price, led):
+    row = a['best'][1]
+    tf, sl, tp = row[1], row[9], row[10]
+    vol = math.floor((st.order_size_usdt / price) * 1e8) / 1e8
+    if vol <= 0:
+        return
+    amount = round(st.order_size_usdt, 2)
+    reason = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم"
+    if dry:
+        record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
+                     sl, tp, '—', ST_DRY, 'شبیه‌سازی — بدون ارسال به صرافی')
+        led['dry_net_spent'] += amount
+        p = led['positions'].setdefault(sym, {'volume': 0.0})
+        p['volume'] += vol
+        return
+    code, data = client.place_order('buy', sym, price, vol, st.order_type == 'market')
+    ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
+    o = (data.get('order') or {}) if isinstance(data, dict) else {}
+    oid = str(o.get('id') or (data.get('id') if isinstance(data, dict) else '') or '')
+    if ok:
+        record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
+                     sl, tp, oid, ST_PLACED, str(data)[:80])
+        p = led['positions'].setdefault(sym, {'volume': 0.0})
+        p['volume'] += vol
+    else:
+        log.error('ثبت سفارش واقعی خرید %s ناموفق: HTTP %s | %s', sym, code, str(data)[:150])
+        record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
+                     sl, tp, '', 'ناموفق', str(data)[:100])
+
+
+def sell_one(st, ws_t, client, dry, sym, a, price, vol, led):
+    amount = round(vol * price, 2)
+    reason = f"سیگنال فروش {a['sells']}/{a['total']} تایم‌فریم"
+    if dry:
+        record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
+                     '—', '—', '—', ST_DRY, 'شبیه‌سازی — بدون ارسال به صرافی')
+        led['dry_net_spent'] -= amount
+        led['positions'].pop(sym, None)
+        return
+    code, data = client.place_order('sell', sym, price, vol, st.order_type == 'market')
+    ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
+    o = (data.get('order') or {}) if isinstance(data, dict) else {}
+    oid = str(o.get('id') or (data.get('id') if isinstance(data, dict) else '') or '')
+    if ok:
+        record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
+                     '—', '—', oid, ST_PLACED, str(data)[:80])
+        led['positions'].pop(sym, None)
+    else:
+        log.error('ثبت سفارش واقعی فروش %s ناموفق: HTTP %s | %s', sym, code, str(data)[:150])
+        record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
+                     '—', '—', '', 'ناموفق', str(data)[:100])
+
+
+# ================= نقطه ورود اصلی =================
+def run(sh, st, rows):
+    dry = st.dry_run
+    log.info('ماژول معاملات فعال — حالت: %s', 'شبیه‌سازی (DRY-RUN)' if dry else '⚠️ سفارش واقعی')
+    ws_t = sh.worksheet(TRADES_TAB)
+    key = load_env().get('NOBITEX_API_KEY', '').strip()
+    client = NobitexClient(key) if key else None
+    if not dry and not client:
+        log.error('معامله واقعی فعال است اما NOBITEX_API_KEY در .env تنظیم نشده — هیچ سفارشی ثبت نشد')
+        return
+
+    agg = aggregate_signals(rows)
+    prices = {str(r[0]).upper(): parse_price(r[2]) for r in rows if r and r[0]}
+    led = read_ledger(ws_t)
+
+    if client and not dry:
+        sync_order_statuses(ws_t, led, client)
+        led = read_ledger(ws_t)  # خواندن مجدد پس از همگام‌سازی
+
+    cands = [s for s, a in agg.items() if is_buy_candidate(a)]
+    log.info('کاندیدهای خرید این اجرا: %s', '، '.join(cands) if cands else 'هیچ')
+
+    # ۱) فروش پوزیشن‌هایی که سیگنال فروش اکثریت گرفته‌اند
+    for sym in list(led['positions']):
+        a = agg.get(sym)
+        if not (a and is_sell_candidate(a)):
+            continue
+        if led['daily_count'] >= st.max_daily_trades:
+            log.info('فروش %s انجام نشد: سقف معاملات روزانه', sym)
+            continue
+        p = prices.get(sym)
+        if not p:
+            continue
+        vol = led['positions'][sym]['volume']
+        if not dry:
+            avail = currency_available(client, sym)
+            if avail is None:
+                log.warning('فروش %s انجام نشد: موجودی کیف پول از API قابل دریافت نیست', sym)
+                continue
+            vol = min(vol, avail)
+        sell_one(st, ws_t, client, dry, sym, a, p, vol, led)
+        led['daily_count'] += 1
+
+    # ۲) خرید کاندیدها با احترام به همه سقف‌ها
+    open_pos = len(led['positions'])
+    for sym in cands:
+        a = agg[sym]
+        if led['daily_count'] >= st.max_daily_trades:
+            log.info('خرید %s انجام نشد: سقف معاملات روزانه (%d)', sym, st.max_daily_trades)
+            continue
+        if sym in led['positions'] or sym in led['pending']:
+            log.info('خرید %s انجام نشد: پوزیشن یا سفارش باز موجود است', sym)
+            continue
+        if open_pos >= st.max_open_positions:
+            log.info('خرید %s انجام نشد: سقف پوزیشن باز (%d)', sym, st.max_open_positions)
+            continue
+        p = prices.get(sym)
+        if not p or p <= 0:
+            continue
+        if dry:
+            bal = st.dry_start_usdt - led['dry_net_spent']
+        else:
+            bal = currency_available(client, 'usdt')
+            if bal is None:
+                log.error('خرید %s انجام نشد: موجودی USDT از API قابل دریافت نیست', sym)
+                continue
+        if bal < st.order_size_usdt or bal - st.order_size_usdt < st.min_usdt_balance:
+            log.info('خرید %s انجام نشد: موجودی USDT کافی نیست (%.1f)', sym, bal)
+            continue
+        buy_one(st, ws_t, client, dry, sym, a, p, led)
+        led['daily_count'] += 1
+        open_pos += 1
+    log.info('پایان ماژول معاملات — مجموع سفارش‌های امروز: %d', led['daily_count'])
+
+
+# ================= تب کیف پول =================
+def refresh_wallet(sh, st, rows):
+    ws = sh.worksheet(WALLET_TAB)
+    key = load_env().get('NOBITEX_API_KEY', '').strip()
+    prices = {str(r[0]).upper(): parse_price(r[2]) for r in rows if r and r[0]}
+    usdt_rls = None
+    try:
+        usdt_rls = parse_price(sh.worksheet(UNIVERSE_TAB).acell('D1').value)
+    except Exception:
+        pass
+
+    if not key:
+        ws.update(values=[['کلید API تنظیم نشده — پس از پر کردن .env روی سرور، موجودی‌ها اینجا نمایش داده می‌شوند',
+                           '', '', '', '', jnow()]], range_name='A4:F4')
+        return
+
+    client = NobitexClient(key)
+    code, data = client.wallets()
+    wl = None
+    if code == 200:
+        if isinstance(data, dict):
+            wl = data.get('wallets') or data.get('balances')
+        elif isinstance(data, list):
+            wl = data
+    if not isinstance(wl, list):
+        msg = f'خطا در دریافت کیف پول از API (HTTP {code})'
+        ws.update(values=[[msg, '', '', '', '', jnow()]], range_name='A4:F4')
+        log.error('%s — %s', msg, str(data)[:150])
+        return
+
+    out = []
+    for w in wl:
+        cur = str(w.get('currency') or w.get('name') or '').lower()
+        if not cur:
+            continue
+        try:
+            bal = float(w.get('balance') or 0)
+        except (TypeError, ValueError):
+            bal = 0.0
+        try:
+            blk = float(w.get('blocked') or 0)
+        except (TypeError, ValueError):
+            blk = 0.0
+        act = None
+        for k in ('activeBalance', 'active_balance'):
+            if w.get(k) not in (None, ''):
+                try:
+                    act = float(w[k])
+                    break
+                except (TypeError, ValueError):
+                    pass
+        if act is None:
+            act = max(bal - blk, 0.0)
+        if bal == 0 and cur not in ('usdt', 'irr'):
+            continue
+        if cur == 'usdt':
+            val = bal
+        elif cur in ('irr', 'rls') and usdt_rls:
+            val = bal / usdt_rls
+        elif prices.get(cur.upper()):
+            val = bal * prices[cur.upper()]
+        else:
+            val = None
+        out.append([cur.upper(), fmt_bal(bal), fmt_bal(blk), fmt_bal(act),
+                    round(val, 2) if val is not None else '—', ''])
+    out.sort(key=lambda x: -(x[4] if isinstance(x[4], (int, float)) else -1))
+    if len(out) > 40:
+        out = out[:40] + [['…', f'+{len(out) - 40} دارایی دیگر', '', '', '', '']]
+    body = out or [['(کیف پولی یافت نشد)', '', '', '', '', '']]
+    padded = body + [[''] * 6] * (41 - len(body))
+    ws.update(values=[['💼 کیف پول‌های نوبیتکس — مستقیم از API صرافی', 'آخرین به‌روزرسانی:', jnow()]],
+              range_name='A1:C1')
+    ws.update(values=padded, range_name='A4:F44')
+    log.info('تب کیف پول از API به‌روزرسانی شد (%d دارایی)', len(out))
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+    if '--test-auth' in sys.argv:
+        key = load_env().get('NOBITEX_API_KEY', '').strip()
+        if not key:
+            print('✗ NOBITEX_API_KEY در .env تنظیم نشده است')
+            sys.exit(1)
+        import json
+        c = NobitexClient(key)
+        for name, fn in (('کیف پول‌ها', c.wallets), ('سفارش‌های باز', c.open_orders)):
+            code, data = fn()
+            print(f'--- {name} → HTTP {code} ---')
+            print(json.dumps(data, ensure_ascii=False)[:1500])
+        print('\n✓ هیچ سفارشی ثبت نشد — این حالت فقط تست اتصال است')
+    elif '--test-signals' in sys.argv:
+        sample = [
+            ['BTC', '15m', '83,000', 'نزولی', 'خرید', '40', 2, 1, 2, '81,000', '85,000', 'تست'],
+            ['BTC', '1h', '83,000', 'نزولی', 'خنثی', '60', 0, 3, 2, '', '', ''],
+            ['BTC', '4h', '83,000', 'نزولی', 'خنثی', '60', 0, 3, 2, '', '', ''],
+            ['BTC', '1D', '83,000', 'صعودی', 'خرید', '60', 3, 0, 2, '80,000', '87,000', ''],
+            ['ETH', '15m', '2,680', 'صعودی', 'خنثی', '60', 3, 0, 2, '', '', ''],
+            ['ETH', '1h', '2,680', 'نزولی', 'خنثی', '40', 1, 2, 2, '', '', ''],
+        ]
+        agg = aggregate_signals(sample)
+        for sym, a in agg.items():
+            d = 'کاندید خرید ✓' if is_buy_candidate(a) else '—'
+            print(f'{sym}: خرید={a["buys"]} فروش={a["sells"]} از {a["total"]} تایم‌فریم → {d}')
+    else:
+        print('استفاده: trader.py --test-auth | --test-signals')

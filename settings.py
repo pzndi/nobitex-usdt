@@ -11,7 +11,7 @@ FA_DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '012345678
 INDICATOR_KEYS = {'SMA', 'EMA', 'RSI', 'MACD', 'BB', 'STOCH', 'OBV', 'CCI', 'WPR', 'ATR'}
 TIMEFRAME_KEYS = {'1m', '5m', '15m', '30m', '1h', '3h', '4h', '6h', '12h', '1D', '2D', '3D'}
 TRADING_KEYS = {'TRADING_ENABLED', 'DRY_RUN', 'MAX_DAILY_TRADES', 'ORDER_TYPE',
-                'ORDER_SIZE_USDT', 'MAX_OPEN_POSITIONS', 'MIN_USDT_BALANCE',
+                'ORDER_SIZE_USDT', 'MAX_OPEN_POSITIONS', 'MIN_USDT_BALANCE', 'DRY_START_USDT',
                 'SL_ATR_MULT', 'TP_ATR_MULT'}
 GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK'}
 
@@ -34,7 +34,7 @@ DEFAULT_TIMEFRAMES = [('15m', '15'), ('1h', '60'), ('4h', '240'), ('1D', '1D')]
 DEFAULT_TRADING = {'TRADING_ENABLED': 'خیر', 'DRY_RUN': 'بله', 'MAX_DAILY_TRADES': '10',
                    'ORDER_TYPE': 'market', 'ORDER_SIZE_USDT': '50',
                    'MAX_OPEN_POSITIONS': '3', 'MIN_USDT_BALANCE': '20',
-                   'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0'}
+                   'DRY_START_USDT': '1000', 'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0'}
 DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
                    'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300'}
 
@@ -167,6 +167,10 @@ class Settings:
     @property
     def min_usdt_balance(self):
         return self._tnum('MIN_USDT_BALANCE', 20)
+
+    @property
+    def dry_start_usdt(self):
+        return self._tnum('DRY_START_USDT', 1000)
 
     @property
     def sl_atr_mult(self):
