@@ -181,8 +181,16 @@ class NobitexClient:
 
     def cancel_order(self, order_id):
         """لغو سفارش — برای بازسازی OCO متحرک"""
-        return self._sc.post('/market/orders/update-status',
-                             {'orderId': str(order_id), 'status': 'cancelled'})
+        last = (0, {})
+        for status in ('canceled', 'cancelled'):
+            code, data = self._sc.post('/market/orders/update-status',
+                                       {'orderId': str(order_id), 'status': status})
+            last = (code, data)
+            if code == 200 and (not isinstance(data, dict) or data.get('status') != 'failed'):
+                return code, data
+            if isinstance(data, dict) and str(data.get('error')) == 'NotFound':
+                return code, data  # قبلاً لغو/حذف شده — نتیجه همان است
+        return last
 
     def place_oco_sell(self, symbol, volume, take_profit, stop_price, stop_limit=None):
         """OCO فروش — حد سود (limit) + حد ضرر (stop-limit) بومی روی صرافی
@@ -725,6 +733,8 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                 code_c, data_c = client.cancel_order(oid)
                 ok_c = (code_c == 200 and (not isinstance(data_c, dict)
                                            or data_c.get('status') != 'failed'))
+                if not ok_c and isinstance(data_c, dict) and str(data_c.get('error')) == 'NotFound':
+                    ok_c = True  # پایه قبلاً لغو شده — نتیجه مطلوب حاصل است
                 if not ok_c:
                     cancel_ok = False
                     log.error('لغو پایه OCO %s ناموفق: HTTP %s | %s',
@@ -937,8 +947,12 @@ def run(sh, st, rows, state=None):
 
     # شمارش روزانه: فقط معاملات خود ربات (تطبیق orderId با دفتر سفارشات)
     # معاملات دستی کاربر سهمیه ربات را مصرف نمی‌کند
-    bot_ids = {clean_oid(r[10]) for _, r in led['rows']
-               if clean_oid(r[10]) not in ('', 'None', chr(8212))}
+    bot_ids = set()
+    for _, r in led['rows']:
+        for _x in str(r[10]).split('|'):
+            _x = clean_oid(_x)
+            if _x not in ('', 'None', chr(8212)):
+                bot_ids.add(_x)
     api_count = client.trades_today(bot_order_ids=bot_ids) if (client and not dry) else 0
     led['daily_count'] = max(led['daily_count'], api_count or 0)
     if not dry:
@@ -958,10 +972,6 @@ def run(sh, st, rows, state=None):
         if not (a and is_sell_candidate(a)):
             continue
         if sym in led.get('pending_sells', set()):
-            log.info('فروش سیگنالی %s رد شد: OCO بومی باز است — خروج با صرافی', sym)
-        if sym in led.get('pending_sells', set()):
-            log.info('فروش سیگنالی %s رد شد: OCO بومی باز است — خروج با صرافی', sym)
-            continue
             log.info('فروش سیگنالی %s رد شد: OCO بومی باز است — خروج با صرافی', sym)
             continue
         if led['daily_count'] >= st.max_daily_trades:
