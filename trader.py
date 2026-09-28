@@ -62,42 +62,28 @@ MIN_TFS = 2  # حداقل تعداد تایم‌فریم هم‌جهت برای 
 
 # ================= کلاینت API معاملاتی =================
 class NobitexClient:
-    def __init__(self, api_key):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Authorization': f'Token {api_key}',
-            'Content-Type': 'application/json',
-            'User-Agent': 'nobitex-sheet-updater/2.0',
-        })
+    """پوشش امضاشده روی API معاملاتی — Nobitex-Key/Signature/Timestamp
+    (امضای Ed25519 روی timestamp+METHOD+full_path+raw_body طبق مستندات رسمی apiv2)"""
 
-    def _call(self, method, path, payload=None, params=None):
-        r = self.session.request(method, f'{BASE}/{path}',
-                                 json=payload, params=params, timeout=TIMEOUT)
-        try:
-            return r.status_code, r.json()
-        except ValueError:
-            return r.status_code, {'raw': r.text[:200]}
+    def __init__(self, public_key, private_key_b64):
+        from nobitex_auth import SignedClient
+        self._sc = SignedClient(public_key, private_key_b64)
 
     def wallets(self):
-        code, data = self._call('POST', 'users/wallets/list', {})
-        if code != 200:
-            code, data = self._call('GET', 'users/wallets/list')
-        return code, data
+        return self._sc.post('/users/wallets/list', {})
 
     def wallet_balance(self, currency):
-        return self._call('POST', 'users/wallets/balance', {'wallet': currency.lower()})
+        return self._sc.post('/users/wallets/balance', {'wallet': currency.lower()})
 
     def open_orders(self):
-        code, data = self._call('POST', 'market/orders/list', {'status': 'open'})
-        if code != 200:
-            code, data = self._call('POST', 'market/orders/list', {})
+        # مستندات apiv2: GET /market/orders/list
+        code, data = self._sc.get('/market/orders/list')
+        if code not in (200, 201):
+            code, data = self._sc.post('/market/orders/list', {})
         return code, data
 
     def order_status(self, order_id):
-        code, data = self._call('POST', 'market/orders/status', {'id': str(order_id)})
-        if code != 200:
-            code, data = self._call('GET', 'market/orders/status', params={'id': str(order_id)})
-        return code, data
+        return self._sc.post('/market/orders/status', {'id': str(order_id)})
 
     def place_order(self, order_type, symbol, price, volume, is_market):
         payload = {'type': order_type,
@@ -107,7 +93,15 @@ class NobitexClient:
                    'srcCurrency': symbol.lower(),
                    'dstCurrency': 'usdt',
                    'mode': 'market' if is_market else 'limit'}
-        return self._call('POST', 'market/orders/add', payload)
+        return self._sc.post('/market/orders/add', payload)
+
+
+def make_client():
+    """کلاینت امضاشده از .env — None یعنی کلیدها ناقص‌اند"""
+    e = load_env()
+    k = (e.get('NOBITEX_API_KEY') or '').strip()
+    s = (e.get('NOBITEX_API_SECRET') or '').strip()
+    return NobitexClient(k, s) if k and s else None
 
 
 # ================= ابزارها =================
@@ -323,7 +317,7 @@ def run(sh, st, rows):
     log.info('ماژول معاملات فعال — حالت: %s', 'شبیه‌سازی (DRY-RUN)' if dry else '⚠️ سفارش واقعی')
     ws_t = sh.worksheet(TRADES_TAB)
     key = load_env().get('NOBITEX_API_KEY', '').strip()
-    client = NobitexClient(key) if key else None
+    client = make_client()
     if not dry and not client:
         log.error('معامله واقعی فعال است اما NOBITEX_API_KEY در .env تنظیم نشده — هیچ سفارشی ثبت نشد')
         return
@@ -394,8 +388,9 @@ def run(sh, st, rows):
 
 # ================= تب کیف پول =================
 def refresh_wallet(sh, st, rows):
+    """موجودی‌ها مستقیم از API نوبیتکس — فرمت تأییدشده:
+    currency / balance / blockedBalance / activeBalance"""
     ws = sh.worksheet(WALLET_TAB)
-    key = load_env().get('NOBITEX_API_KEY', '').strip()
     prices = {str(r[0]).upper(): parse_price(r[2]) for r in rows if r and r[0]}
     usdt_rls = None
     try:
@@ -403,19 +398,14 @@ def refresh_wallet(sh, st, rows):
     except Exception:
         pass
 
-    if not key:
+    client = make_client()
+    if not client:
         ws.update(values=[['کلید API تنظیم نشده — پس از پر کردن .env روی سرور، موجودی‌ها اینجا نمایش داده می‌شوند',
                            '', '', '', '', jnow()]], range_name='A4:F4')
         return
 
-    client = NobitexClient(key)
     code, data = client.wallets()
-    wl = None
-    if code == 200:
-        if isinstance(data, dict):
-            wl = data.get('wallets') or data.get('balances')
-        elif isinstance(data, list):
-            wl = data
+    wl = data.get('wallets') if isinstance(data, dict) else None
     if not isinstance(wl, list):
         msg = f'خطا در دریافت کیف پول از API (HTTP {code})'
         ws.update(values=[[msg, '', '', '', '', jnow()]], range_name='A4:F4')
@@ -432,7 +422,7 @@ def refresh_wallet(sh, st, rows):
         except (TypeError, ValueError):
             bal = 0.0
         try:
-            blk = float(w.get('blocked') or 0)
+            blk = float(w.get('blockedBalance') or w.get('blocked') or 0)
         except (TypeError, ValueError):
             blk = 0.0
         act = None
@@ -445,18 +435,18 @@ def refresh_wallet(sh, st, rows):
                     pass
         if act is None:
             act = max(bal - blk, 0.0)
-        if bal == 0 and cur not in ('usdt', 'irr'):
+        if bal == 0 and cur not in ('usdt', 'rls', 'irr'):
             continue
         if cur == 'usdt':
             val = bal
-        elif cur in ('irr', 'rls') and usdt_rls:
+        elif cur in ('rls', 'irr') and usdt_rls:
             val = bal / usdt_rls
         elif prices.get(cur.upper()):
             val = bal * prices[cur.upper()]
         else:
             val = None
         out.append([cur.upper(), fmt_bal(bal), fmt_bal(blk), fmt_bal(act),
-                    round(val, 2) if val is not None else '—', ''])
+                    round(val, 4) if val is not None else '—', ''])
     out.sort(key=lambda x: -(x[4] if isinstance(x[4], (int, float)) else -1))
     if len(out) > 40:
         out = out[:40] + [['…', f'+{len(out) - 40} دارایی دیگر', '', '', '', '']]
@@ -476,7 +466,12 @@ if __name__ == '__main__':
             print('✗ NOBITEX_API_KEY در .env تنظیم نشده است')
             sys.exit(1)
         import json
-        c = NobitexClient(key)
+        e = load_env()
+        sec = (e.get('NOBITEX_API_SECRET') or '').strip()
+        if not sec:
+            print('✗ NOBITEX_API_SECRET در .env تنظیم نشده است')
+            sys.exit(1)
+        c = NobitexClient(key, sec)
         for name, fn in (('کیف پول‌ها', c.wallets), ('سفارش‌های باز', c.open_orders)):
             code, data = fn()
             print(f'--- {name} → HTTP {code} ---')
