@@ -189,13 +189,22 @@ def main():
             time.sleep(0.2)
     update_strategy(sh.worksheet('استراتژی'), rows)
 
-    # ۴) هوک معاملات — گام ۴
+    # ۴) کیف پول — هر اجرا تازه می‌شود (اگر کلید API موجود باشد)
+    try:
+        import trader
+        trader.refresh_wallet(sh, settings, rows)
+    except ImportError:
+        log.warning('ماژول trader موجود نیست')
+    except Exception:
+        log.exception('خطا در به‌روزرسانی تب کیف پول')
+
+    # ۵) معاملات
     if settings.trading_enabled:
         try:
             import trader
             trader.run(sh, settings, rows)
-        except ImportError:
-            log.warning('TRADING_ENABLED فعال است اما ماژول trader هنوز اضافه نشده (گام ۴)')
+        except Exception:
+            log.exception('خطا در ماژول معاملات')
     else:
         log.info('معاملات غیرفعال (TRADING_ENABLED=خیر) — فقط تولید سیگنال')
     return 0
