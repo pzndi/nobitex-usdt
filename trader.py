@@ -27,19 +27,29 @@ from settings import load_env
 from strategy_engine import fmt_price
 
 try:
+    import datetime as _dt
     import jdatetime
+    _TEHRAN = _dt.timedelta(hours=3, minutes=30)
+
+    def _now_tehran():
+        return _dt.datetime.now(_dt.timezone.utc) + _TEHRAN
 
     def jnow():
-        return jdatetime.datetime.now().strftime('%Y/%m/%d %H:%M')
+        g = _now_tehran().replace(tzinfo=None)
+        return jdatetime.datetime.fromgregorian(datetime=g).strftime('%Y/%m/%d %H:%M')
 
     def jtoday():
-        return jdatetime.date.today().strftime('%Y/%m/%d')
+        return jdatetime.date.fromgregorian(date=_now_tehran().date()).strftime('%Y/%m/%d')
 except ImportError:
+    import datetime as _dt
+    _TEHRAN = _dt.timedelta(hours=3, minutes=30)
+
     def jnow():
-        return datetime.now().strftime('%Y-%m-%d %H:%M')
+        return (_dt.datetime.now(_dt.timezone.utc) + _TEHRAN).strftime('%Y-%m-%d %H:%M')
 
     def jtoday():
-        return datetime.now().strftime('%Y-%m-%d')
+        return (_dt.datetime.now(_dt.timezone.utc) + _TEHRAN).strftime('%Y-%m-%d')
+
 
 log = logging.getLogger('nobitex-bot')
 
@@ -76,7 +86,7 @@ def record_closed(ws_t, sym, entry_time, entry_price, exit_price, vol, reason, m
         try:
             import jdatetime
             t0 = jdatetime.datetime.strptime(str(entry_time), '%Y/%m/%d %H:%M')
-            dur = round((jdatetime.datetime.now() - t0).total_seconds() / 3600, 1)
+            dur = round((jdatetime.datetime.fromgregorian(datetime=_now_tehran().replace(tzinfo=None)) - t0).total_seconds() / 3600, 1)
         except Exception:
             pass
         ws_c = ws_t.spreadsheet.worksheet(CLOSED_TAB)
@@ -124,10 +134,11 @@ class NobitexClient:
     def order_status(self, order_id):
         return self._sc.post('/market/orders/status', {'id': str(order_id)})
 
-    def trades_today(self):
-        """تعداد معاملات امروز (به وقت تهران) از API نوبیتکس — منبع حقیقت.
-        timestamp ها ISO8601 UTC هستند؛ مرز نیمه‌شب تهران (UTC+3:30) محاسبه می‌شود.
-        صفحه اول پاسخ (۳۰ معامله اخیر) پیمایش می‌شود — برای سقف روزانه کافی است."""
+    def trades_today(self, bot_order_ids=None):
+        """تعداد سفارش‌های اجراشده‌ی خودِ ربات امروز (به وقت تهران).
+        اگر bot_order_ids بدهد فقط معاملات با orderId عضو آن مجموعه شمرده می‌شود —
+        معاملات دستی کاربر سهمیه روزانه ربات را مصرف نمی‌کنند.
+        شمارش بر پایه orderId یکتاست (پرشدن بخشی یک بار شمرده می‌شود)."""
         import datetime as dt
         code, data = self._sc.get('/market/trades/list')
         if code != 200 or not isinstance(data, dict):
@@ -136,8 +147,11 @@ class NobitexClient:
         now_shifted = dt.datetime.now(dt.timezone.utc) + offset
         midnight = dt.datetime.combine(now_shifted.date(), dt.time.min,
                                        tzinfo=dt.timezone.utc)
-        n = 0
+        seen = set()
         for tr in (data.get('trades') or []):
+            oid = str(tr.get('orderId') or '')
+            if bot_order_ids is not None and oid not in bot_order_ids:
+                continue
             ts = tr.get('timestamp')
             if not ts:
                 continue
@@ -146,8 +160,8 @@ class NobitexClient:
             except ValueError:
                 continue
             if t + offset >= midnight:
-                n += 1
-        return n
+                seen.add(oid or f"trade-{tr.get('id')}")
+        return len(seen)
 
     def place_order(self, order_type, symbol, price, volume, is_market,
                     client_order_id=None):
@@ -624,10 +638,13 @@ def run(sh, st, rows, state=None):
     apply_trailing(st, ws_t, led, prices)
     check_sl_tp(st, ws_t, client, dry, led, prices)
 
-    # شمارش روزانه از API (منبع حقیقت) + ردیف‌های شبیه‌سازی امروز
-    api_count = client.trades_today() if client else 0
+    # شمارش روزانه: فقط معاملات خود ربات (تطبیق orderId با دفتر سفارشات)
+    # معاملات دستی کاربر سهمیه ربات را مصرف نمی‌کند
+    bot_ids = {str(r[10]).strip() for _, r in led['rows']
+               if str(r[10]).strip() not in ('', 'None', chr(8212))}
+    api_count = client.trades_today(bot_order_ids=bot_ids) if (client and not dry) else 0
     led['daily_count'] = max(led['daily_count'], api_count or 0)
-    log.info('معاملات امروز: %d (شمارش از API نوبیتکس: %s)', led['daily_count'], api_count)
+    log.info('معاملات امروز ربات: %d (اجراشده از API: %s)', led['daily_count'], api_count)
 
     cands = [s for s, a in agg.items() if is_buy_candidate(a)]
     log.info('کاندیدهای خرید این اجرا: %s', '، '.join(cands) if cands else 'هیچ')

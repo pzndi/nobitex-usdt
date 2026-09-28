@@ -25,15 +25,18 @@ WARMUP = 60
 LOOKBACK = 480                      # سقف API نوبیتکس: ۵۰۰ کندل
 
 try:
+    import datetime as _dt
     import jdatetime
+    _TEHRAN = _dt.timedelta(hours=3, minutes=30)
 
     def jnow():
-        return jdatetime.datetime.now().strftime('%Y/%m/%d %H:%M')
+        g = (_dt.datetime.now(_dt.timezone.utc) + _TEHRAN).replace(tzinfo=None)
+        return jdatetime.datetime.fromgregorian(datetime=g).strftime('%Y/%m/%d %H:%M')
 except ImportError:
-    from datetime import datetime
+    from datetime import datetime, timedelta, timezone
 
     def jnow():
-        return datetime.now().strftime('%Y-%m-%d %H:%M')
+        return (datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)).strftime('%Y-%m-%d %H:%M')
 
 
 def simulate(v, c, thr, slm, tpm):

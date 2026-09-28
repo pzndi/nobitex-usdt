@@ -22,10 +22,13 @@ STATS_URL = 'https://apiv2.nobitex.ir/market/stats'
 HEADERS = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) nobitex-sheet-updater/2.0'}
 
 try:
+    import datetime as _dt
     import jdatetime
+    _TEHRAN = _dt.timedelta(hours=3, minutes=30)
 
     def jnow():
-        return jdatetime.datetime.now().strftime('%Y/%m/%d %H:%M')
+        g = (_dt.datetime.now(_dt.timezone.utc) + _TEHRAN).replace(tzinfo=None)
+        return jdatetime.datetime.fromgregorian(datetime=g).strftime('%Y/%m/%d %H:%M')
 except ImportError:
     def jnow():
         return time.strftime('%Y-%m-%d %H:%M')
