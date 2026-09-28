@@ -294,7 +294,7 @@ def is_sell_candidate(a):
 
 
 # ================= دفتر معاملات (حافظه ربات) =================
-def read_ledger(ws):
+def read_ledger(ws, dust_usdt=0.5):
     """خواندن دفتر سفارش‌ها:
     - پوزیشن‌های باز با میانگین قیمت ورود، آخرین SL/TP و تفکیک حجم واقعی/شبیه‌سازی
       (شبیه‌سازی = ردیف‌های «شبیه‌سازی شده»؛ واقعی = «پر شد/بخشی پر»)
@@ -356,6 +356,9 @@ def read_ledger(ws):
         if net > 1e-12:
             sim_net = max(0.0, min(b[2] - s_[1], net))
             entry = (b[1] / b[0]) if b[0] else None
+            # dust (fee leftovers) is not a position
+            if entry is not None and net * entry < dust_usdt:
+                continue
             sl, tp = sltp.get(sym, (None, None))
             led['positions'][sym] = {'volume': net,
                                      'sim_volume': sim_net,
@@ -373,18 +376,35 @@ def sync_order_statuses(ws_t, led, client, st=None):
     api_map = {'Active': ST_OPEN, 'Done': ST_FILLED,
                'Inactive': ST_PENDING_STOP, 'Canceled': ST_CANCELLED}
     for row_num, r in led['rows']:
-        oid = clean_oid(r[10])
-        if not oid or oid == '—' or str(r[11]).strip() not in OPENISH:
+        # OCO = two legs; ids joined with | in the ledger
+        oids = [clean_oid(x) for x in str(r[10]).split('|')]
+        oids = [x for x in oids if x and x != chr(8212)]
+        if not oids or str(r[11]).strip() not in OPENISH:
             continue
-        code, data = client.order_status(oid)
-        o = data.get('order') if isinstance(data, dict) else None
-        raw = o.get('status') if isinstance(o, dict) else None
-        if raw not in api_map:
-            log.warning('وضعیت سفارش %s قابل تشخیص نبود: HTTP %s | %s',
-                        oid, code, str(data)[:120])
+        legs = {}
+        for oid in oids:
+            code, data = client.order_status(oid)
+            o = data.get('order') if isinstance(data, dict) else None
+            raw = o.get('status') if isinstance(o, dict) else None
+            if raw in api_map:
+                legs[oid] = (raw, o)
+            else:
+                log.warning('order %s: unknown status HTTP %s | %s',
+                            oid, code, str(data)[:120])
+        if not legs:
             continue
+        done_leg = next(((rw, o) for rw, o in legs.values() if rw == 'Done'), None)
+        if done_leg:
+            raw, o = done_leg
+        elif all(rw == 'Canceled' for rw, _ in legs.values()):
+            raw = 'Canceled'
+            o = next(iter(legs.values()))[1]
+        else:
+            raw, o = next(iter(legs.values()))
         new_st = api_map[raw]
         vol_update = None
+        exit_px = None
+        exit_vol = None
         if raw == 'Canceled':
             try:
                 matched = float(str(o.get('matchedAmount') or 0).replace(',', ''))
@@ -393,6 +413,12 @@ def sync_order_statuses(ws_t, led, client, st=None):
             if matched > 0:
                 new_st = ST_PARTIAL
                 vol_update = matched
+        if raw == 'Done':
+            try:
+                exit_px = float(str(o.get('price') or 0).replace(',', '')) or None
+                exit_vol = float(str(o.get('matchedAmount') or 0).replace(',', '')) or None
+            except (TypeError, ValueError):
+                pass
         if new_st != str(r[11]).strip():
             ws_t.update_cell(row_num, 12, new_st)
             if vol_update is not None:
@@ -405,11 +431,11 @@ def sync_order_statuses(ws_t, led, client, st=None):
         if r[2].strip() == 'فروش' and new_st == ST_FILLED:
             pos_c = led['positions'].get(sym_c) or {}
             entry_c = pos_c.get('entry_price') or parse_price(r[5]) or 0.0
-            vol_c = parse_price(r[6]) or 0.0
+            vol_c = exit_vol or (parse_price(r[6]) or 0.0)
             t_in = next((rr[0] for _, rr in led['rows']
                          if rr[1].strip().upper() == sym_c and rr[2].strip() == 'خرید'
                          and rr[11].strip() in EXECUTED), '—')
-            record_closed(ws_t, sym_c, t_in, entry_c, parse_price(r[5]) or 0.0,
+            record_closed(ws_t, sym_c, t_in, entry_c, exit_px or (parse_price(r[5]) or 0.0),
                           vol_c, 'اجرای سفارش فروش', 'واقعی')
 
         # OCO بومی صرافی — فقط در گذار خرید به «پر شد» (یک‌بار؛ در صورت شکست،
@@ -429,11 +455,25 @@ def sync_order_statuses(ws_t, led, client, st=None):
                 code2, data2 = client.place_oco_sell(sym_c, vol_o, tp_o, sl_o)
                 ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
                 o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
+                leg_ids = []
+                if isinstance(o2, dict):
+                    for _k in ('id', 'pairId', 'orderId'):
+                        if o2.get(_k):
+                            leg_ids.append(clean_oid(o2.get(_k)))
+                if isinstance(data2, dict) and isinstance(data2.get('orders'), list):
+                    for _lg in data2['orders']:
+                        if isinstance(_lg, dict):
+                            for _k in ('id', 'pairId', 'orderId'):
+                                if _lg.get(_k):
+                                    leg_ids.append(clean_oid(_lg.get(_k)))
+                oid_oco = '|'.join(dict.fromkeys(leg_ids))
+                if ok2 and not oid_oco:
+                    log.info('OCO add response without id: %s', str(data2)[:300])
                 if ok2:
                     record_trade(ws_t, 'فروش', sym_c, '', 'OCO حد سود/ضرر بومی صرافی',
                                  fmt_price(tp_o), vol_o, round(vol_o * tp_o, 2),
                                  fmt_price(sl_o), fmt_price(tp_o),
-                                 clean_oid(o2.get('id')), ST_PLACED,
+                                 oid_oco, ST_PLACED,
                                  'OCO: TP=' + fmt_price(tp_o) + ' | SL=' + fmt_price(sl_o))
                     led.setdefault('pending_sells', set()).add(sym_c)
                     log.info('OCO بومی صرافی برای %s ثبت شد (TP=%s | SL=%s)',
@@ -660,6 +700,38 @@ def write_ranking(sh, st, rows, led, bt_params=None):
     ws.update(values=data, range_name=f'A4:N{3 + n}')
 
 
+def reconcile_real_positions(st, ws_t, client, led, prices):
+    """تطبیق پوزیشن‌های واقعی با کیف پول نوبیتکس (منبع حقیقت).
+    اگر اکثر سکه‌های یک پوزیشن واقعی از کیف پول رفته باشند (اجرای OCO روی
+    صرافی، فروش دستی یا برداشت)، پوزیشن در دفتر بسته می‌شود — مستقل از اینکه
+    شناسه سفارش در دفتر موجود باشد یا نه."""
+    for sym in list(led['positions']):
+        p = led['positions'].get(sym) or {}
+        rv = p.get('real_volume') or 0.0
+        if rv <= 1e-12:
+            continue
+        avail = currency_available(client, sym)
+        if avail is None or avail >= rv * 0.5:
+            continue
+        price = prices.get(sym) or _public_price(sym) or p.get('entry_price') or 0.0
+        sold = max(rv - avail, 0.0)
+        for row_num, rr in led['rows']:
+            if (rr[1].strip().upper() == sym and rr[2].strip() == 'فروش'
+                    and rr[11].strip() in OPENISH):
+                ws_t.update_cell(row_num, 12, ST_FILLED)
+                ws_t.update_cell(row_num, 7, sold)
+                ws_t.update_cell(row_num, 6, fmt_price(price))
+                break
+        e_time = next((rr[0] for _, rr in led['rows']
+                       if rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
+                       and rr[11].strip() in EXECUTED), '—')
+        record_closed(ws_t, sym, e_time, p.get('entry_price') or price, price,
+                      sold, 'خروج از کیف پول (OCO یا فروش دستی)', 'واقعی')
+        led['positions'].pop(sym, None)
+        led['pending_sells'].discard(sym)
+        led['pending'].discard(sym)
+
+
 def run(sh, st, rows, state=None):
     dry = st.dry_run
     log.info('ماژول معاملات فعال — حالت: %s', 'شبیه‌سازی (DRY-RUN)' if dry else '⚠️ سفارش واقعی')
@@ -671,11 +743,13 @@ def run(sh, st, rows, state=None):
 
     agg = aggregate_signals(rows)
     prices = {str(r[0]).upper(): parse_price(r[2]) for r in rows if r and r[0]}
-    led = read_ledger(ws_t)
+    led = read_ledger(ws_t, st.dust_usdt)
 
     if client and not dry:
         sync_order_statuses(ws_t, led, client, st)
-        led = read_ledger(ws_t)  # خواندن مجدد پس از همگام‌سازی
+        led = read_ledger(ws_t, st.dust_usdt)  # خواندن مجدد پس از همگام‌سازی
+    if client:
+        reconcile_real_positions(st, ws_t, client, led, prices)
 
     # ۰) اجرای خودکار حد ضرر/حد سود — با اولویت بالا، قبل از سیگنال‌ها
     apply_trailing(st, ws_t, led, prices)
@@ -827,7 +901,7 @@ def update_report(sh, st, rows):
     P&L شناور: پوزیشن‌های باز × (قیمت فعلی − میانگین ورود)
     P&L محقق: جمع «P&L: …» ثبت‌شده در ردیف‌های فروش"""
     import re as _re
-    led = read_ledger(sh.worksheet(TRADES_TAB))
+    led = read_ledger(sh.worksheet(TRADES_TAB), st.dust_usdt)
     prices = {str(r[0]).upper(): parse_price(r[2]) for r in rows if r and r[0]}
     for sym in led['positions']:
         if prices.get(sym) is None:
