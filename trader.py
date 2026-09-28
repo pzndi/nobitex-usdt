@@ -18,6 +18,7 @@ trader.py — ماژول معاملات ربات
 import logging
 import math
 import sys
+import time
 from datetime import datetime
 
 import requests
@@ -75,7 +76,11 @@ class NobitexClient:
         return self._sc.post('/users/wallets/list', {})
 
     def wallet_balance(self, currency):
-        return self._sc.post('/users/wallets/balance', {'wallet': currency.lower()})
+        for key in ('wallet', 'currency'):
+            code, data = self._sc.post('/users/wallets/balance', {key: currency.lower()})
+            if code == 200:
+                return code, data
+        return code, data
 
     def open_orders(self):
         # مستندات apiv2: GET /market/orders/list
@@ -87,14 +92,45 @@ class NobitexClient:
     def order_status(self, order_id):
         return self._sc.post('/market/orders/status', {'id': str(order_id)})
 
-    def place_order(self, order_type, symbol, price, volume, is_market):
+    def trades_today(self):
+        """تعداد معاملات امروز (به وقت تهران) از API نوبیتکس — منبع حقیقت.
+        timestamp ها ISO8601 UTC هستند؛ مرز نیمه‌شب تهران (UTC+3:30) محاسبه می‌شود.
+        صفحه اول پاسخ (۳۰ معامله اخیر) پیمایش می‌شود — برای سقف روزانه کافی است."""
+        import datetime as dt
+        code, data = self._sc.get('/market/trades/list')
+        if code != 200 or not isinstance(data, dict):
+            return None
+        offset = dt.timedelta(hours=3, minutes=30)
+        now_shifted = dt.datetime.now(dt.timezone.utc) + offset
+        midnight = dt.datetime.combine(now_shifted.date(), dt.time.min,
+                                       tzinfo=dt.timezone.utc)
+        n = 0
+        for tr in (data.get('trades') or []):
+            ts = tr.get('timestamp')
+            if not ts:
+                continue
+            try:
+                t = dt.datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+            except ValueError:
+                continue
+            if t + offset >= midnight:
+                n += 1
+        return n
+
+    def place_order(self, order_type, symbol, price, volume, is_market,
+                    client_order_id=None):
+        """ثبت سفارش اسپات apiv2 — طبق مستندات p117 و پروب‌های زنده:
+        amount (واحد srcCurrency) + execution (limit/market/stop_market/stop_limit)
+        + clientOrderId یکتا در میان سفارش‌های باز"""
         payload = {'type': order_type,
                    'market': f'{symbol}USDT',
-                   'price': str(price),
-                   'volume': str(volume),
                    'srcCurrency': symbol.lower(),
                    'dstCurrency': 'usdt',
-                   'mode': 'market' if is_market else 'limit'}
+                   'price': str(price),
+                   'amount': str(volume),
+                   'execution': 'market' if is_market else 'limit'}
+        if client_order_id:
+            payload['clientOrderId'] = client_order_id
         return self._sc.post('/market/orders/add', payload)
 
 
@@ -276,7 +312,7 @@ def sync_order_statuses(ws_t, led, client):
 
 
 # ================= اجرای سفارش =================
-def buy_one(st, ws_t, client, dry, sym, a, price, led):
+def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     row = a['best'][1]
     tf, sl, tp = row[1], row[9], row[10]
     vol = math.floor((st.order_size_usdt / price) * 1e8) / 1e8
@@ -291,7 +327,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led):
         p = led['positions'].setdefault(sym, {'volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
         p['volume'] += vol
         return
-    code, data = client.place_order('buy', sym, price, vol, st.order_type == 'market')
+    code, data = client.place_order('buy', sym, price, vol, st.order_type == 'market', client_order_id=coid)
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
     oid = str(o.get('id') or (data.get('id') if isinstance(data, dict) else '') or '')
@@ -407,6 +443,11 @@ def run(sh, st, rows):
     # ۰) اجرای خودکار حد ضرر/حد سود — با اولویت بالا، قبل از سیگنال‌ها
     check_sl_tp(st, ws_t, client, dry, led, prices)
 
+    # شمارش روزانه از API (منبع حقیقت) + ردیف‌های شبیه‌سازی امروز
+    api_count = client.trades_today() if client else 0
+    led['daily_count'] = max(led['daily_count'], api_count or 0)
+    log.info('معاملات امروز: %d (شمارش از API نوبیتکس: %s)', led['daily_count'], api_count)
+
     cands = [s for s, a in agg.items() if is_buy_candidate(a)]
     log.info('کاندیدهای خرید این اجرا: %s', '، '.join(cands) if cands else 'هیچ')
 
@@ -458,7 +499,7 @@ def run(sh, st, rows):
         if bal < st.order_size_usdt or bal - st.order_size_usdt < st.min_usdt_balance:
             log.info('خرید %s انجام نشد: موجودی USDT کافی نیست (%.1f)', sym, bal)
             continue
-        buy_one(st, ws_t, client, dry, sym, a, p, led)
+        buy_one(st, ws_t, client, dry, sym, a, p, led, coid=f'nbx-{sym.lower()}-{int(time.time())}')
         led['daily_count'] += 1
         open_pos += 1
     log.info('پایان ماژول معاملات — مجموع سفارش‌های امروز: %d', led['daily_count'])
