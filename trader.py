@@ -641,7 +641,7 @@ def sell_one(st, ws_t, client, dry, sym, reason, price, vol, led):
         record_closed(ws_t, sym, e_time, entry or price, price, vol, reason, 'شبیه‌سازی')
         led['dry_net_spent'] -= amount
         return
-    code, data = client.place_order('sell', sym, price, vol, st.order_type == 'market')
+    code, data = client.place_order('sell', sym, price, vol, st.exit_order_type == 'market')
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
     oid = clean_oid(o.get('id') if isinstance(o, dict) else None or (data.get('id') if isinstance(data, dict) else ''))
