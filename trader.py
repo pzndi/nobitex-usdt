@@ -180,17 +180,23 @@ class NobitexClient:
         return self._sc.post('/market/orders/add', payload)
 
     def cancel_order(self, order_id):
-        """لغو سفارش — برای بازسازی OCO متحرک"""
-        last = (0, {})
-        for status in ('canceled', 'cancelled'):
-            code, data = self._sc.post('/market/orders/update-status',
-                                       {'orderId': str(order_id), 'status': status})
-            last = (code, data)
-            if code == 200 and (not isinstance(data, dict) or data.get('status') != 'failed'):
+        """لغو سفارش — طبق مستندات رسمی p121:
+        - پارامتر: order (یا clientOrderId) — نه orderId
+        - مقدار مجاز: status=canceled
+        - HTTP 200 لزوماً یعنی لغو؛ updatedStatus یا order.status باید Canceled باشد
+        - لغو یک پایه از OCO انجام‌نشده، پایه جفت را نیز لغو می‌کند"""
+        code, data = self._sc.post('/market/orders/update-status',
+                                   {'order': str(order_id), 'status': 'canceled'})
+        if code == 200 and isinstance(data, dict):
+            o = data.get('order') or {}
+            if (str(data.get('updatedStatus')) == 'Canceled'
+                    or str(o.get('status')) == 'Canceled'):
                 return code, data
-            if isinstance(data, dict) and str(data.get('error')) == 'NotFound':
-                return code, data  # قبلاً لغو/حذف شده — نتیجه همان است
-        return last
+            return code, {'status': 'failed', 'code': 'TransitionNotApplied',
+                          'message': 'updatedStatus=%s orderStatus=%s' % (
+                              data.get('updatedStatus'), o.get('status')),
+                          'order': o}
+        return code, data
 
     def place_oco_sell(self, symbol, volume, take_profit, stop_price, stop_limit=None):
         """OCO فروش — حد سود (limit) + حد ضرر (stop-limit) بومی روی صرافی
@@ -860,6 +866,24 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
         led['pending'].discard(sym)
 
 
+def recent_failed_buy(led, sym, minutes):
+    """آیا خرید این نماد در N دقیقه اخیر ناموفق بوده؟ (جلوگیری از کوبیدن هر چرخه)"""
+    if minutes <= 0:
+        return False
+    try:
+        import jdatetime as _jd
+        now_j = _jd.datetime.fromgregorian(datetime=_now_tehran().replace(tzinfo=None))
+        for _, rr in led['rows']:
+            if (rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
+                    and rr[11].strip() == 'ناموفق'):
+                t0 = _jd.datetime.strptime(str(rr[0]).strip(), '%Y/%m/%d %H:%M')
+                if (now_j - t0).total_seconds() < minutes * 60:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def backfill_oco(st, ws_t, client, led, prices):
     """تور ایمنی OCO: هر پوزیشن واقعی (بالای غبار) که سفارش فروش باز ندارد،
     OCO با SL/TP همان پوزیشن می‌گیرد — جبران خودکار هر جاافتادگی، هر چرخه.
@@ -997,6 +1021,9 @@ def run(sh, st, rows, state=None):
             continue
         if sym in led['positions'] or sym in led['pending']:
             log.info('خرید %s انجام نشد: پوزیشن یا سفارش باز موجود است', sym)
+            continue
+        if st.order_fail_cooldown_min > 0 and recent_failed_buy(led, sym, st.order_fail_cooldown_min):
+            log.info('خرید %s انجام نشد: سفارش ناموفق در %d دقیقه اخیر — صبر', sym, st.order_fail_cooldown_min)
             continue
         if open_pos >= st.max_open_positions:
             log.info('خرید %s انجام نشد: سقف پوزیشن باز (%d)', sym, st.max_open_positions)
