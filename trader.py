@@ -411,7 +411,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
                      sl, tp, oid, ST_PLACED, str(data)[:80])
         p = led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0, 'real_volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
         p['volume'] += vol
-            p['real_volume'] = p.get('real_volume', 0.0) + vol
+        p['real_volume'] = p.get('real_volume', 0.0) + vol
         if st.use_exchange_oco:
             code2, data2 = client.place_oco_sell(sym, vol, parse_price(tp), parse_price(sl))
             ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
