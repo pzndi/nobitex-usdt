@@ -928,6 +928,39 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
         led['pending'].discard(sym)
 
 
+def recent_losing_exit(led, sym, minutes):
+    """آیا این نماد در N دقیقه اخیر خروج زیان‌ده داشته؟ (کول‌داون ورود مجدد)
+    معیار: ردیف فروش «پر شد» با P&L منفی در پیام، یا دلیل «حد ضرر»"""
+    if minutes <= 0:
+        return False
+    import re as _re
+    try:
+        import jdatetime as _jd
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=3, minutes=30)
+        now = now.replace(tzinfo=None)
+        for _, rr in led['rows']:
+            if (rr[1].strip().upper() == sym and rr[2].strip() == 'فروش'
+                    and rr[11].strip() in EXECUTED):
+                reason = str(rr[4])
+                msg = str(rr[12])
+                m = _re.search(r'P&L:\s*([+-]?\d+(?:\.\d+)?)', msg)
+                pnl = float(m.group(1)) if m else None
+                is_loss = (pnl is not None and pnl < 0) or ('حد ضرر' in reason)
+                if not is_loss:
+                    continue
+                try:
+                    t0 = _jd.datetime.strptime(str(rr[0]).strip(), '%Y/%m/%d %H:%M')
+                    g = t0.togregorian()
+                    if (now - g).total_seconds() < minutes * 60:
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return False
+
+
 def recent_failed_buy(led, sym, minutes):
     """آیا خرید این نماد در N دقیقه اخیر ناموفق بوده؟ (جلوگیری از کوبیدن هر چرخه)"""
     if minutes <= 0:
@@ -1107,6 +1140,9 @@ def run(sh, st, rows, state=None):
             continue
         if st.order_fail_cooldown_min > 0 and recent_failed_buy(led, sym, st.order_fail_cooldown_min):
             log.info('خرید %s انجام نشد: سفارش ناموفق در %d دقیقه اخیر — صبر', sym, st.order_fail_cooldown_min)
+            continue
+        if st.reentry_cooldown_min > 0 and recent_losing_exit(led, sym, st.reentry_cooldown_min):
+            log.info('خرید %s انجام نشد: خروج زیان‌ده در %d دقیقه اخیر — کول‌داون ورود مجدد', sym, st.reentry_cooldown_min)
             continue
         if open_pos >= st.max_open_positions:
             log.info('خرید %s انجام نشد: سقف پوزیشن باز (%d)', sym, st.max_open_positions)
