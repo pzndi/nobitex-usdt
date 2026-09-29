@@ -73,11 +73,27 @@ def run_backtest(sh, st, state):
     return True
 
 
+def _ref_atr(st, sym, cache):
+    """ATR تایم‌فریم مرجع برای SL/TP یکنواخت (کش به‌ازای چرخه)"""
+    label, res = st.sltp_timeframe
+    key = (sym, res)
+    if key in cache:
+        return cache[key]
+    c = se.fetch_candles(sym + 'USDT', res, 120)
+    val = None
+    if c and len(c['c']) > 50:
+        v = se.prepare_votes(c, st)
+        val = v['atr'][-1]
+    cache[key] = val
+    return val
+
+
 def run_signals(sh, st, state):
     symbols = state.get('universe') or []
     if not symbols:
         return False
     bt = state.get('bt_params') or {}
+    ref_cache = {}
     rows = []
     for sym in symbols:
         bp = bt.get(sym) or {}
@@ -86,7 +102,8 @@ def run_signals(sh, st, state):
             if not c:
                 rows.append([sym, label, '', '', '—', '', '', '', '', '', '', 'خطا در دریافت کندل'])
                 continue
-            r = se.analyze(c, st, thr=bp.get('thr'), slm=bp.get('slm'), tpm=bp.get('tpm'))
+            r = se.analyze(c, st, thr=bp.get('thr'), slm=bp.get('slm'), tpm=bp.get('tpm'),
+                           atr_ref=_ref_atr(st, sym, ref_cache))
             rows.append([sym, label, r['price'], r['trend'], r['signal'],
                          r['strength'], r['buy'], r['sell'], r['neutral'],
                          r['sl'], r['tp'], r['note']])

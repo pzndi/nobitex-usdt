@@ -241,7 +241,7 @@ def prepare_votes(c, st):
     return V
 
 
-def analyze(c, st, thr=None, slm=None, tpm=None):
+def analyze(c, st, thr=None, slm=None, tpm=None, atr_ref=None):
     """تحلیل لحظه‌ای آخرین کندل؛ thr/slm/tpm اختیاری = تحمیل استراتژی بک‌تست همان نماد"""
     closes = c['c']
     n = len(closes)
@@ -272,7 +272,8 @@ def analyze(c, st, thr=None, slm=None, tpm=None):
             out['signal'], out['strength'] = 'خنثی', round(max(bp, sp))
         out['note'] = v['note'][i] or 'همه اندیکاتورها خنثی'
 
-    a = v['atr'][i]
+    # ATR: مرجع (اگر از بیرون داده شود) یا همان تایم‌فریم تحلیل
+    a = atr_ref if atr_ref is not None else v['atr'][i]
     slm_eff = slm if slm is not None else st.sl_atr_mult
     tpm_eff = tpm if tpm is not None else st.tp_atr_mult
     if a is not None:

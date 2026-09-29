@@ -17,7 +17,7 @@ TRADING_KEYS = {'TRADING_ENABLED', 'DRY_RUN', 'MAX_DAILY_TRADES', 'ORDER_TYPE',
                 'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE'}
 GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK',
                    'INTERVAL_UNIVERSE_MIN', 'INTERVAL_SIGNALS_MIN', 'INTERVAL_BACKTEST_MIN',
-                   'INTERVAL_WALLET_MIN', 'BACKTEST_TIMEFRAME'}
+                   'INTERVAL_WALLET_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME'}
 
 RES_FALLBACK = {'1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '3h': '180',
                 '4h': '240', '6h': '360', '12h': '720', '1D': '1D', '2D': '2D', '3D': '3D'}
@@ -44,7 +44,7 @@ DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
                    'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300',
                    'INTERVAL_UNIVERSE_MIN': '120', 'INTERVAL_SIGNALS_MIN': '5',
                    'INTERVAL_BACKTEST_MIN': '30', 'INTERVAL_WALLET_MIN': '30',
-                   'BACKTEST_TIMEFRAME': '1D'}
+                   'BACKTEST_TIMEFRAME': '1D', 'SLTP_TIMEFRAME': '1h'}
 
 
 def load_env(path='.env'):
@@ -235,6 +235,16 @@ class Settings:
     @property
     def interval_wallet_min(self):
         return self._interval('INTERVAL_WALLET_MIN', 30)
+
+    @property
+    def sltp_timeframe(self):
+        """تایم‌فریم مرجع محاسبه SL/TP — باید در فهرست فعال باشد؛ در غیر این صورت اولین فعال"""
+        label = str(self.general.get('SLTP_TIMEFRAME') or '1h').strip()
+        act = dict(self.active_timeframes)
+        if label in act:
+            return label, act[label]
+        first = self.active_timeframes[0]
+        return first[0], first[1]
 
     @property
     def backtest_timeframe(self):
