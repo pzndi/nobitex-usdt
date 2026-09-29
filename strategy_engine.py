@@ -231,6 +231,39 @@ def prepare_votes(c, st):
             else:
                 addf(i, 0, '')
 
+    # ── پاس اصلاحی RSI شرطی ──
+    # RSI فقط هم‌جهت روند رأی می‌دهد؛ خلاف روند → خنثی
+    trend_ref_f, trend_ref_s = None, None
+    if ind.get('SMA', {}).get('enabled'):
+        pp = ind['SMA'].get('params', {})
+        trend_ref_f = sma(closes, pint(pp.get('fast'), 20))
+        trend_ref_s = sma(closes, pint(pp.get('slow'), 50))
+    elif ind.get('EMA', {}).get('enabled'):
+        pp = ind['EMA'].get('params', {})
+        trend_ref_f = ema(closes, pint(pp.get('fast'), 9))
+        trend_ref_s = ema(closes, pint(pp.get('slow'), 21))
+    if trend_ref_f is not None and ind.get('RSI', {}).get('enabled'):
+        pp = ind['RSI'].get('params', {})
+        p_ = pint(pp.get('period'), 14)
+        os_ = pflt(pp.get('oversold'), 30)
+        ob_ = pflt(pp.get('overbought'), 70)
+        rr = rsi(closes, p_)
+        for i in range(n):
+            if rr[i] is None or trend_ref_f[i] is None or trend_ref_s[i] is None:
+                continue
+            rsi_vote = 1 if rr[i] < os_ else (-1 if rr[i] > ob_ else 0)
+            if rsi_vote == 0:
+                continue
+            trend_up = trend_ref_f[i] > trend_ref_s[i]
+            if (rsi_vote == -1 and trend_up) or (rsi_vote == 1 and not trend_up):
+                V['sell'][i] -= 1
+                V['neutral'][i] += 1
+                V['note'][i] = (V['note'][i].replace(f'RSI={rr[i]:.0f} اشباع خرید؛ ', '')
+                                .replace(f'RSI={rr[i]:.0f} اشباع خرید', '')
+                                .replace(f'RSI={rr[i]:.0f} اشباع فروش؛ ', '')
+                                .replace(f'RSI={rr[i]:.0f} اشباع فروش', '')
+                                + f'؛ RSI={rr[i]:.0f} خنثی (خلاف روند)').strip('؛ ')
+
     # ATR — زیرساخت حد ضرر/سود (رأی ندارد)
     p_atr = pint(ind.get('ATR', {}).get('params', {}).get('period'), 14)
     V['atr'] = atr(highs, lows, closes, p_atr)
