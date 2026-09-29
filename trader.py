@@ -90,6 +90,11 @@ def record_closed(ws_t, sym, entry_time, entry_price, exit_price, vol, reason, m
         except Exception:
             pass
         ws_c = ws_t.spreadsheet.worksheet(CLOSED_TAB)
+        try:
+            ws_c.update(values=[['🏁 معاملات بسته‌شده — خروج، سود/زیان و دلیل',
+                                 'به‌روزرسانی:', jnow()]], range_name='A1:C1')
+        except Exception:
+            pass
         ws_c.append_row([jnow(), sym, entry_time, fmt_price(entry_price),
                          fmt_price(exit_price), vol, round(pnl, 2), round(pct, 2),
                          reason, dur, mode])
@@ -103,6 +108,11 @@ def record_trade(ws_t, action, sym, tf, reason, price, volume, amount, sl, tp, o
     """ثبت سفارش در دفتر «سفارشات» — هر سفارش یک ردیف"""
     ws_t.append_row([jnow(), sym, action, tf, reason, price, volume, amount,
                      sl, tp, oid, status, msg])
+    try:
+        ws_t.update(values=[['📒 دفتر سفارش‌ها — ثبت، وضعیت خودکار و SL/TP داینامیک',
+                             'به‌روزرسانی:', jnow()]], range_name='A1:C1')
+    except Exception:
+        pass
     log.info('سفارش ثبت شد: %s %s | %s @ %s | %s', action, sym, volume, price, status)
 
 
