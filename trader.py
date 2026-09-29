@@ -848,6 +848,49 @@ def write_ranking(sh, st, rows, led, bt_params=None):
     ws.update(values=data, range_name=f'A4:N{3 + n}')
 
 
+def cancel_stale_entries(st, ws_t, client, led):
+    """لغو سفارش‌های ورود (خرید) کهنه — TTL از شیت. سفارش‌های فروش هرگز لمس نمی‌شوند."""
+    if not client or st.entry_ttl_min <= 0:
+        return
+    try:
+        code, data = client.open_orders()
+        live = data.get('orders') or []
+    except Exception:
+        return
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for o in live:
+        if str(o.get('side', '')).upper() != 'BUY':
+            continue
+        try:
+            pct = float(o.get('executedPercent') or o.get('partial') or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        if pct > 0:
+            continue
+        created = str(o.get('created_at') or '')
+        try:
+            t0 = _dt.datetime.fromisoformat(created.replace('Z', '+00:00'))
+            age_min = (now - t0).total_seconds() / 60.0
+        except ValueError:
+            continue
+        if age_min < st.entry_ttl_min:
+            continue
+        sym = str(o.get('symbol', '')).replace('USDT', '').upper()
+        cid = str(o.get('clientOrderId') or o.get('id') or '')
+        code_c, data_c = client.cancel_order(cid)
+        ok = code_c in (200, 201) and not (isinstance(data_c, dict) and data_c.get('status') == 'failed')
+        if ok:
+            for row_num, rr in led['rows']:
+                if str(rr[10]).strip() == cid or cid in str(rr[10]):
+                    ws_t.update_cell(row_num, 12, ST_CANCELLED)
+                    break
+            led['pending'].discard(sym)
+            log.info('سفارش ورود کهنه لغو شد: %s (سن %.0f دقیقه)', sym, age_min)
+        else:
+            log.warning('لغو سفارش کهنه %s ناموفق: %s', sym, str(data_c)[:120])
+
+
 def reconcile_real_positions(st, ws_t, client, led, prices):
     """تطبیق پوزیشن‌های واقعی با کیف پول نوبیتکس (منبع حقیقت).
     اگر اکثر سکه‌های یک پوزیشن واقعی از کیف پول رفته باشند (اجرای OCO روی
@@ -995,6 +1038,8 @@ def run(sh, st, rows, state=None):
         led = read_ledger(ws_t, st.dust_usdt)  # خواندن مجدد پس از همگام‌سازی
     if client:
         reconcile_real_positions(st, ws_t, client, led, prices)
+    if client:
+        cancel_stale_entries(st, ws_t, client, led)
     if client:
         backfill_oco(st, ws_t, client, led, prices)
 
