@@ -417,6 +417,11 @@ def sync_order_statuses(ws_t, led, client, st=None):
         # OCO = two legs; ids joined with | in the ledger
         oids = [clean_oid(x) for x in str(r[10]).split('|')]
         oids = [x for x in oids if x and x != chr(8212)]
+        # ردیف OCO بدون شناسه → وضعیت‌خوانی ممنوع (شبهه‌ی قاطی شدن با خرید مرتبط)
+        # تور ایمنی در همین چرخه شناسه می‌گذارد؛ تیک بعدی وضعیت را می‌خواند
+        if str(r[4]).find('OCO') >= 0 and not oids:
+            log.info('OCO بدون شناسه (ردیف %s، %s) — منتظر تور ایمنی برای درج شناسه', row_num, r[1])
+            continue
         if not oids or str(r[11]).strip() not in OPENISH:
             continue
         legs = {}
