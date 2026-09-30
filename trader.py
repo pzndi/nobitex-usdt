@@ -571,18 +571,55 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
         p['volume'] += vol
         p['real_volume'] = p.get('real_volume', 0.0) + vol
         if st.use_exchange_oco and st.order_type == 'market':
-            code2, data2 = client.place_oco_sell(sym, vol, parse_price(tp), parse_price(sl))
-            ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
-            o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
-            oid2 = clean_oid(o2.get('id')) if ok2 else ''
-            if ok2:
-                record_trade(ws_t, 'فروش', sym, '', 'OCO حد سود/ضرر بومی صرافی',
-                             tp, vol, round(vol * (parse_price(tp) or 0.0), 2),
-                             '', '', oid2, ST_PLACED, f'OCO: TP={tp} | SL={sl}')
-                led.setdefault('pending_sells', set()).add(sym)
+            # F5: کارمزد خرید از سکه دریافتی کسر می‌شود → حجم OCO باید به موجودی فعال کپ شود
+            # F6: شناسه پایه‌ها از id/pairId/orderId + orders[] + fallback از open_orders؛
+            #     SL/TP در سلول‌های ردیف درج می‌شود تا sync/تریلینگ آن را ببینند
+            sl_o, tp_o = parse_price(sl), parse_price(tp)
+            vol_o = vol
+            avail_o = currency_available(client, sym)
+            if avail_o is not None:
+                vol_o = min(vol_o, avail_o)
+            if not (vol_o > 1e-12 and sl_o and tp_o):
+                log.warning('OCO فوری %s رد شد: موجودی فعال=%s | SL=%s | TP=%s — تور ایمنی چرخه بعد جبران می‌کند',
+                            sym, avail_o, sl_o, tp_o)
             else:
-                log.error('ثبت OCO برای %s ناموفق (HTTP %s): %s — SL/TP توسط خود ربات چک می‌شود',
-                          sym, code2, str(data2)[:120])
+                code2, data2 = client.place_oco_sell(sym, vol_o, tp_o, sl_o)
+                ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+                o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
+                leg_ids = []
+                if isinstance(o2, dict):
+                    for _k in ('id', 'pairId', 'orderId'):
+                        if o2.get(_k):
+                            leg_ids.append(clean_oid(o2.get(_k)))
+                if isinstance(data2, dict) and isinstance(data2.get('orders'), list):
+                    for _lg in data2['orders']:
+                        if isinstance(_lg, dict):
+                            for _k in ('id', 'pairId', 'orderId'):
+                                if _lg.get(_k):
+                                    leg_ids.append(clean_oid(_lg.get(_k)))
+                if ok2 and not leg_ids:
+                    try:
+                        _co, _do = client.open_orders()
+                        for _lg in (_do.get('orders') or []):
+                            if (str(_lg.get('srcCurrency', '')).lower() == sym.lower()
+                                    and str(_lg.get('type')) == 'sell'):
+                                for _k in ('pairId', 'id'):
+                                    if _lg.get(_k):
+                                        leg_ids.append(clean_oid(_lg.get(_k)))
+                    except Exception:
+                        pass
+                oid_oco = '|'.join(dict.fromkeys(leg_ids))
+                if ok2:
+                    record_trade(ws_t, 'فروش', sym, '', 'OCO حد سود/ضرر بومی صرافی',
+                                 fmt_price(tp_o), vol_o, round(vol_o * tp_o, 2),
+                                 fmt_price(sl_o), fmt_price(tp_o), oid_oco, ST_PLACED,
+                                 'OCO: TP=' + fmt_price(tp_o) + ' | SL=' + fmt_price(sl_o))
+                    led.setdefault('pending_sells', set()).add(sym)
+                    if not oid_oco:
+                        log.warning('OCO %s ثبت شد اما شناسه استخراج نشد — sync/تور ایمنی تکمیل می‌کند', sym)
+                else:
+                    log.error('ثبت OCO برای %s ناموفق (HTTP %s): %s — SL/TP توسط خود ربات',
+                              sym, code2, str(data2)[:120])
     else:
         log.error('ثبت سفارش واقعی خرید %s ناموفق: HTTP %s | %s', sym, code, str(data)[:150])
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
