@@ -958,13 +958,25 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
             continue
         price = prices.get(sym) or _public_price(sym) or p.get('entry_price') or 0.0
         sold = max(rv - avail, 0.0)
+        marked = False
         for row_num, rr in led['rows']:
             if (rr[1].strip().upper() == sym and rr[2].strip() == 'فروش'
                     and rr[11].strip() in OPENISH):
                 ws_t.update_cell(row_num, 12, ST_FILLED)
                 ws_t.update_cell(row_num, 7, sold)
                 ws_t.update_cell(row_num, 6, fmt_price(price))
+                marked = True
                 break
+        if not marked:
+            # N5: هیچ ردیف فروش بازی نبود (خروج از مسیر OCO بی‌شناسه / فروش دستی).
+            # بدون ردیف پایانی، دفتر در تیک بعد همان پوزیشن را بازسازی و دوباره
+            # می‌بندد — حلقه فانتوم (PUMP: ۱۷۶ ردیف «بسته شد» کاذب در یک روز).
+            ws_t.append_row([jnow(), sym, 'فروش', '', 'خروج از کیف پول (جبران دفتر)',
+                             fmt_price(price), sold, round(sold * price, 2),
+                             '', '', '', ST_FILLED,
+                             'ردیف جبران — بستن پوزیشن تخلیه‌شده از کیف پول'])
+            log.info('ردیف جبران دفتر درج شد: فروش %s | %s @ %s',
+                     sym, sold, fmt_price(price))
         e_time = next((rr[0] for _, rr in led['rows']
                        if rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
                        and rr[11].strip() in EXECUTED), '—')
