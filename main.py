@@ -10,6 +10,8 @@ main.py — چرخه کامل ربات:
 import logging
 import time
 
+import net_timeout  # noqa: F401 — تایم‌اوت پیش‌فرض HTTP (F1)
+
 import gspread
 import requests
 

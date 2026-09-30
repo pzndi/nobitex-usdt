@@ -17,6 +17,8 @@ import os
 import sys
 import time
 
+import net_timeout  # noqa: F401 — تایم‌اوت پیش‌فرض HTTP (F1)
+
 import gspread
 
 from settings import Settings, load_env
