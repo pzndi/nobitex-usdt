@@ -1121,6 +1121,11 @@ def run(sh, st, rows, state=None):
     if client and not dry:
         sync_order_statuses(ws_t, led, client, st)
         led = read_ledger(ws_t, st.dust_usdt)  # خواندن مجدد پس از همگام‌سازی
+    # N2: snapshot نمادهای دارای پوزیشن در ابتدای چرخه — خروجِ همین چرخه
+    # (SL/TP/سیگنال فروش/reconcile) نباید همان لحظه به خرید مجدد بینجامد؛
+    # ردیف‌های فروشِ همین چرخه هنوز در snapshot دفتر نیستند و گاردها نمی‌بینندشان
+    positions_at_start = set(led['positions'])
+
     if client:
         reconcile_real_positions(st, ws_t, client, led, prices)
     if client:
@@ -1184,6 +1189,9 @@ def run(sh, st, rows, state=None):
             continue
         if sym in led['positions'] or sym in led['pending']:
             log.info('خرید %s انجام نشد: پوزیشن یا سفارش باز موجود است', sym)
+            continue
+        if sym in positions_at_start:
+            log.info('خرید %s انجام نشد: خروج در همین چرخه — ورود مجدد از تیک بعد', sym)
             continue
         if st.order_fail_cooldown_min > 0 and recent_failed_buy(led, sym, st.order_fail_cooldown_min):
             log.info('خرید %s انجام نشد: سفارش ناموفق در %d دقیقه اخیر — صبر', sym, st.order_fail_cooldown_min)
