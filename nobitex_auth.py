@@ -48,7 +48,9 @@ class SignedClient:
             self._clock_offset = 0.0
         return self._clock_offset
 
-    def request(self, method, path, payload=None, retries=2):
+    def request(self, method, path, payload=None, retries=0):
+        # X2: درخواست یک‌بارمصرف — سفارشِ با پاسخ گمشده نباید retry شود
+        # (ریسک سفارش تکراری)؛ شکست خواندن‌ها در تیک بعدی خودجبران است
         if not self._clock_synced:
             self.sync_clock()
         method = method.upper()
