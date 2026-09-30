@@ -903,7 +903,13 @@ def write_ranking(sh, st, rows, led, bt_params=None):
 
 
 def cancel_stale_entries(st, ws_t, client, led):
-    """لغو سفارش‌های ورود (خرید) کهنه — TTL از شیت. سفارش‌های فروش هرگز لمس نمی‌شوند."""
+    """لغو سفارش‌های ورود (خرید) کهنه — TTL از شیت. فروش‌ها هرگز لمس نمی‌شوند.
+    X1: فیلدهای واقعی open_orders در apiv2: type/pairId/matchedAmount/clientOrderId/
+    srcCurrency — فیلدهای side/executedPercent/created_at/symbol/id در پاسخ نیستند
+    (نسخه قبلی هرگز match نمی‌شد — با تست ساختگی اثبات شد: صفر فراخوانی لغو).
+    پاسخ فهرست timestamp ندارد → سن سفارش از epoch داخل clientOrderId خود ربات
+    (nbx-{sym}-{epoch}). فقط سفارش‌های خود ربات لغو می‌شوند؛ سفارش دستی کاربر،
+    فروش‌ها و بخشی‌پرها هرگز لمس نمی‌شوند."""
     if not client or st.entry_ttl_min <= 0:
         return
     try:
@@ -911,34 +917,41 @@ def cancel_stale_entries(st, ws_t, client, led):
         live = data.get('orders') or []
     except Exception:
         return
-    import datetime as _dt
-    now = _dt.datetime.now(_dt.timezone.utc)
+    import re as _re
     for o in live:
-        if str(o.get('side', '')).upper() != 'BUY':
+        if str(o.get('type', '')).lower() != 'buy':
             continue
         try:
-            pct = float(o.get('executedPercent') or o.get('partial') or 0)
+            matched = float(str(o.get('matchedAmount') or 0).replace(',', ''))
         except (TypeError, ValueError):
-            pct = 0.0
-        if pct > 0:
+            matched = 0.0
+        if matched > 0:            # پرشدن جزئی — لغو نکن
             continue
-        created = str(o.get('created_at') or '')
-        try:
-            t0 = _dt.datetime.fromisoformat(created.replace('Z', '+00:00'))
-            age_min = (now - t0).total_seconds() / 60.0
-        except ValueError:
+        cid = str(o.get('clientOrderId') or '')
+        m = _re.match(r'^nbx-([a-z0-9]+)-(\d{9,})$', cid)
+        if not m:                  # سفارش خود ربات نیست (دستی/نامشخص) — دست نزن
             continue
+        sym, epoch = m.group(1).upper(), int(m.group(2))
+        age_min = (time.time() - epoch) / 60.0
         if age_min < st.entry_ttl_min:
             continue
-        sym = str(o.get('symbol', '')).replace('USDT', '').upper()
-        cid = str(o.get('clientOrderId') or o.get('id') or '')
-        code_c, data_c = client.cancel_order(cid)
-        ok = code_c in (200, 201) and not (isinstance(data_c, dict) and data_c.get('status') == 'failed')
+        oid = clean_oid(o.get('pairId'))
+        code_c, data_c = client.cancel_order(oid or cid)
+        ok = (code_c in (200, 201)
+              and not (isinstance(data_c, dict) and data_c.get('status') == 'failed'))
+        if (not ok and isinstance(data_c, dict)
+                and str(data_c.get('error')) == 'NotFound'):
+            ok = True  # از قبل لغو/حذف شده — نتیجه مطلوب حاصل است
+        if not ok and oid and cid:          # تلاش دوم با clientOrderId خودمان
+            code_c, data_c = client.cancel_order(cid)
+            ok = (code_c in (200, 201)
+                  and not (isinstance(data_c, dict) and data_c.get('status') == 'failed'))
         if ok:
-            for row_num, rr in led['rows']:
-                if str(rr[10]).strip() == cid or cid in str(rr[10]):
-                    ws_t.update_cell(row_num, 12, ST_CANCELLED)
-                    break
+            if oid:
+                for row_num, rr in led['rows']:
+                    if oid in str(rr[10]).replace(',', ''):
+                        ws_t.update_cell(row_num, 12, ST_CANCELLED)
+                        break
             led['pending'].discard(sym)
             log.info('سفارش ورود کهنه لغو شد: %s (سن %.0f دقیقه)', sym, age_min)
         else:
