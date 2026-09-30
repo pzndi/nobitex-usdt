@@ -430,7 +430,9 @@ def sync_order_statuses(ws_t, led, client, st=None):
         # ردیف OCO بدون شناسه → وضعیت‌خوانی ممنوع (شبهه‌ی قاطی شدن با خرید مرتبط)
         # تور ایمنی در همین چرخه شناسه می‌گذارد؛ تیک بعدی وضعیت را می‌خواند
         if str(r[4]).find('OCO') >= 0 and not oids:
-            log.info('OCO بدون شناسه (ردیف %s، %s) — منتظر تور ایمنی برای درج شناسه', row_num, r[1])
+            # لاگ فقط برای ردیف‌های باز — ردیف‌های پایانی (پر/لغو شده) هر تیک اسپم نمی‌شوند
+            if str(r[11]).strip() in OPENISH:
+                log.info('OCO بدون شناسه (ردیف %s، %s) — منتظر تور ایمنی برای درج شناسه', row_num, r[1])
             continue
         if not oids or str(r[11]).strip() not in OPENISH:
             continue
