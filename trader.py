@@ -1080,6 +1080,13 @@ def backfill_oco(st, ws_t, client, led, prices):
             continue
         vol_o = rv
         avail = currency_available(client, sym)
+        if avail is not None and avail < rv * 0.5:
+            # خروج روی صرافی در جریان است (پایه OCO اجرا شده / فروش دستی) —
+            # دفتر در تیک‌های بعدی توسط reconcile بسته می‌شود؛ ثبت OCO برای
+            # باقیماندهٔ غبار فقط خطای AmountTooLow می‌سازد
+            log.info('OCO تور ایمنی %s رد شد: کیف پول در حال تخلیه (فعال=%s از %s) — جبران با reconcile',
+                     sym, fmt_bal(avail), fmt_bal(rv))
+            continue
         if avail is not None:
             vol_o = min(vol_o, avail)
         if vol_o <= 1e-12:
