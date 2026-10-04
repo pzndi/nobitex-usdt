@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 .env
 state.json
+
+# فایل‌های اپراتوری
+sheet_dump.txt
+update.log.*.gz
