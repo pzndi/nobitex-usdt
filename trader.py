@@ -497,6 +497,12 @@ def sync_order_statuses(ws_t, led, client, st=None):
                          and rr[11].strip() in EXECUTED), '—')
             record_closed(ws_t, sym_c, t_in, entry_c, exit_px or (parse_price(r[5]) or 0.0),
                           vol_c, 'اجرای سفارش فروش', 'واقعی')
+            # Fix-B: مهر P&L رفت‌وبرگشت (مبنای آخرین خرید) در ردیف فروش —
+            # کول‌داون ورود مجدد و P&L محقق گزارش از همین سلول می‌خوانند
+            entry_b = _last_buy_price(led, sym_c) or entry_c
+            exit_b = exit_px or parse_price(r[5]) or 0.0
+            if entry_b and exit_b and vol_c:
+                _stamp_pnl(ws_t, row_num, r[12], vol_c * (exit_b - entry_b))
 
         # OCO بومی صرافی — فقط در گذار خرید به «پر شد» (یک‌بار؛ در صورت شکست،
         # حفاظت SL/TP با خود ربات ادامه می‌یابد)
@@ -740,6 +746,30 @@ def exit_position(st, ws_t, client, sym, reason, price, led):
     led['positions'].pop(sym, None)
 
 
+def _last_buy_price(led, sym):
+    """قیمت آخرین خریدِ اجراشدهٔ نماد از دفتر — مبنای P&L رفت‌وبرگشت و
+    آستانه فعال‌سازی تریلینگ (به‌جای میانگین وزنی کل تاریخچه)"""
+    p_ = None
+    for _, rr in led.get('rows') or []:
+        if (rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
+                and rr[11].strip() in EXECUTED):
+            v = parse_price(rr[5])
+            if v:
+                p_ = v
+    return p_
+
+
+def _stamp_pnl(ws_t, row_num, msg, pnl):
+    """مهر P&L در پیام ردیف فروش — idempotent (یک‌بار)؛ کول‌داون ورود مجدد
+    و P&L محقق گزارش از همین می‌خوانند"""
+    if pnl is None or 'P&L:' in str(msg):
+        return
+    try:
+        ws_t.update_cell(row_num, 13, (str(msg) + ' | P&L: %+.2f' % pnl)[:250])
+    except Exception:
+        pass
+
+
 def apply_trailing(st, ws_t, led, prices, client=None):
     """SL/TP داینامیک — با رشد قیمت SL بالا کشیده می‌شود (قفل سود)
 
@@ -754,7 +784,10 @@ def apply_trailing(st, ws_t, led, prices, client=None):
         entry, sl, price = p.get('entry_price'), p.get('sl'), prices.get(sym)
         if not (entry and sl and price):
             continue
-        if price < entry * (1 + st.trail_activation_pct / 100.0):
+        # Fix-C: مرجع فعال‌سازی = قیمت آخرین خرید همین نماد (نه میانگین تاریخچه) —
+        # میانگینِ قدیمی تریلینگ را بلافاصله بعد از خرید فعال می‌کرد
+        entry_ref = _last_buy_price(led, sym) or entry
+        if price < entry_ref * (1 + st.trail_activation_pct / 100.0):
             continue
 
         oco_row = next(((rn, rr) for rn, rr in led['rows']
@@ -973,23 +1006,29 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
             continue
         price = prices.get(sym) or _public_price(sym) or p.get('entry_price') or 0.0
         sold = max(rv - avail, 0.0)
-        marked = False
+        marked_row = None
         for row_num, rr in led['rows']:
             if (rr[1].strip().upper() == sym and rr[2].strip() == 'فروش'
                     and rr[11].strip() in OPENISH):
                 ws_t.update_cell(row_num, 12, ST_FILLED)
                 ws_t.update_cell(row_num, 7, sold)
                 ws_t.update_cell(row_num, 6, fmt_price(price))
-                marked = True
+                marked_row = (row_num, rr)
                 break
-        if not marked:
+        # Fix-B: مهر P&L رفت‌وبرگشت (مبنای آخرین خرید) — کول‌داون ورود مجدد
+        # و P&L محقق گزارش از پیام ردیف‌های فروش می‌خوانند
+        entry_b = _last_buy_price(led, sym) or p.get('entry_price') or price
+        pnl_b = sold * (price - entry_b) if (price and entry_b) else None
+        if marked_row is not None:
+            _stamp_pnl(ws_t, marked_row[0], marked_row[1][12], pnl_b)
+        if marked_row is None:
             # N5: هیچ ردیف فروش بازی نبود (خروج از مسیر OCO بی‌شناسه / فروش دستی).
             # بدون ردیف پایانی، دفتر در تیک بعد همان پوزیشن را بازسازی و دوباره
             # می‌بندد — حلقه فانتوم (PUMP: ۱۷۶ ردیف «بسته شد» کاذب در یک روز).
             ws_t.append_row([jnow(), sym, 'فروش', '', 'خروج از کیف پول (جبران دفتر)',
                              fmt_price(price), sold, round(sold * price, 2),
                              '', '', '', ST_FILLED,
-                             'ردیف جبران — بستن پوزیشن تخلیه‌شده از کیف پول'])
+                             'ردیف جبران — بستن پوزیشن تخلیه‌شده از کیف پول' + ('' if pnl_b is None else ' | P&L: %+.2f' % pnl_b)])
             log.info('ردیف جبران دفتر درج شد: فروش %s | %s @ %s',
                      sym, sold, fmt_price(price))
         e_time = next((rr[0] for _, rr in led['rows']
@@ -1151,15 +1190,13 @@ def run(sh, st, rows, state=None):
     agg = aggregate_signals(rows)
     prices = {str(r[0]).upper(): parse_price(r[2]) for r in rows if r and r[0]}
     led = read_ledger(ws_t, st.dust_usdt)
+    # N2/Fix-A: snapshot پوزیشن‌ها «قبل از sync» — خروج‌هایی که sync در همین تیک
+    # تشخیص می‌دهد (پر شدن OCO روی صرافی) نیز از خرید مجدد همان چرخه بلاک می‌شوند
+    positions_at_start = set(led['positions'])
 
     if client and not dry:
         sync_order_statuses(ws_t, led, client, st)
         led = read_ledger(ws_t, st.dust_usdt)  # خواندن مجدد پس از همگام‌سازی
-    # N2: snapshot نمادهای دارای پوزیشن در ابتدای چرخه — خروجِ همین چرخه
-    # (SL/TP/سیگنال فروش/reconcile) نباید همان لحظه به خرید مجدد بینجامد؛
-    # ردیف‌های فروشِ همین چرخه هنوز در snapshot دفتر نیستند و گاردها نمی‌بینندشان
-    positions_at_start = set(led['positions'])
-
     if client:
         reconcile_real_positions(st, ws_t, client, led, prices)
     if client:
