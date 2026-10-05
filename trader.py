@@ -729,6 +729,16 @@ def exit_position(st, ws_t, client, sym, reason, price, led):
         else:
             v = real_vol
             avail = currency_available(client, sym)
+            if avail is not None and avail < real_vol * 0.5:
+                # Fix-4: فعال ≪ دفتر ولی کل سکه‌ها هنوز در کیف پول‌اند → زیر
+                # سفارش باز صرافی بلوکه‌اند (پایه استاپِ تریگرشده در حال پرشدن).
+                # فروش سمت ربات فقط به غبار غیرقابل‌فروش (AmountTooLow) می‌رسد؛
+                # خروج روی صرافی انجام می‌شود و بستن دفتر با reconcile
+                tot = currency_available(client, sym, use_active=False)
+                if tot is not None and tot >= real_vol * 0.5:
+                    log.info('خروج %s به سفارش باز صرافی واگذار شد (فعال=%s از دفتر=%s) — جبران با reconcile',
+                             sym, fmt_bal(avail), fmt_bal(real_vol))
+                    return
             if avail is not None:
                 v = min(real_vol, avail)
             if v > 1e-12:
