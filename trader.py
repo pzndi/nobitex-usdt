@@ -1286,6 +1286,19 @@ def run(sh, st, rows, state=None):
         p = prices.get(sym)
         if not p or p <= 0:
             continue
+        # Fix-3: گارد باندِ ورود — در نمادهای کم‌نوسان (مثل ETH/BTC/XAUT) که
+        # 3×ATR٪ ≈ هزینه رفت‌وبرگشت است، TP خالص سودی باقی نمی‌گذارد (رخداد
+        # ETH 1405/07/12: TP=+0.89٪، خالص ≈ +0.04)؛ ورود باید باندی داشته باشد
+        # که سود خالص معنادار بدهد
+        row = a['best'][1]
+        tp_c, sl_c = parse_price(row[10]), parse_price(row[9])
+        if tp_c and sl_c:
+            tp_pct = (tp_c - p) / p * 100.0
+            sl_pct = (p - sl_c) / p * 100.0
+            if tp_pct < 1.5 or sl_pct < 1.0:
+                log.info('خرید %s انجام نشد: باند SL/TP زیر حداقل هزینه (TP=%.2f٪، SL=%.2f٪)',
+                         sym, tp_pct, sl_pct)
+                continue
         if dry:
             bal = st.dry_start_usdt - led['dry_net_spent']
         else:
