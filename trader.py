@@ -78,10 +78,10 @@ OPENISH = {ST_PLACED, ST_OPEN, ST_PENDING_STOP}
 MIN_TFS = 2
 
 
-def record_closed(ws_t, sym, entry_time, entry_price, exit_price, vol, reason, mode):
+def record_closed(ws_t, sym, entry_time, entry_price, exit_price, vol, reason, mode, fee_usdt=0.0):
     """ثبت معامله بسته‌شده در تب «اتمام معاملات»"""
     try:
-        pnl = vol * (exit_price - entry_price)
+        pnl = vol * (exit_price - entry_price) - float(fee_usdt or 0.0)
         pct = (exit_price / entry_price - 1) * 100 if entry_price else 0.0
         dur = '—'
         try:
@@ -493,17 +493,26 @@ def sync_order_statuses(ws_t, led, client, st=None):
             pos_c = led['positions'].get(sym_c) or {}
             entry_c = pos_c.get('entry_price') or parse_price(r[5]) or 0.0
             vol_c = exit_vol or (parse_price(r[6]) or 0.0)
-            t_in = next((rr[0] for _, rr in led['rows']
+            # N7: real fills for exit legs + last-buy entry (fee-aware)
+            _xf = _exit_fill(client, oids)
+            exit_n7 = ((_xf[0] if _xf and _xf[0] else None)
+                       or exit_px or (parse_price(r[5]) or 0.0))
+            if _xf and _xf[1]:
+                vol_c = _xf[1]
+            sell_fee_n7 = (_xf[2] if _xf else 0.0)
+            entry_n7, buy_fee_n7 = _entry_fill(client, led, sym_c)
+            entry_n7 = entry_n7 or entry_c
+            t_in = next((rr[0] for _, rr in reversed(led['rows'])
                          if rr[1].strip().upper() == sym_c and rr[2].strip() == 'خرید'
                          and rr[11].strip() in EXECUTED), '—')
-            record_closed(ws_t, sym_c, t_in, entry_c, exit_px or (parse_price(r[5]) or 0.0),
-                          vol_c, 'اجرای سفارش فروش', 'واقعی')
+            record_closed(ws_t, sym_c, t_in, entry_n7, exit_n7,
+                          vol_c, 'اجرای سفارش فروش', 'واقعی', fee_usdt=sell_fee_n7 + buy_fee_n7)
             # Fix-B: مهر P&L رفت‌وبرگشت (مبنای آخرین خرید) در ردیف فروش —
             # کول‌داون ورود مجدد و P&L محقق گزارش از همین سلول می‌خوانند
-            entry_b = _last_buy_price(led, sym_c) or entry_c
-            exit_b = exit_px or parse_price(r[5]) or 0.0
+            entry_b = entry_n7
+            exit_b = exit_n7
             if entry_b and exit_b and vol_c:
-                _stamp_pnl(ws_t, row_num, r[12], vol_c * (exit_b - entry_b))
+                _stamp_pnl(ws_t, row_num, r[12], vol_c * (exit_b - entry_b) - sell_fee_n7 - buy_fee_n7)
 
         # OCO بومی صرافی — فقط در گذار خرید به «پر شد» (یک‌بار؛ در صورت شکست،
         # حفاظت SL/TP با خود ربات ادامه می‌یابد)
@@ -781,6 +790,73 @@ def _stamp_pnl(ws_t, row_num, msg, pnl):
         pass
 
 
+def _fills_for_orders(client, order_ids):
+    """N7: real fills (vwap/amount/fee) per orderId from /market/trades/list.
+    Recent window only; misses fall back gracefully at call sites."""
+    ids = {str(o) for o in order_ids if o}
+    if not ids or client is None:
+        return {}
+    try:
+        code, data = client._sc.get('/market/trades/list')
+    except Exception:
+        return {}
+    if code != 200 or not isinstance(data, dict):
+        return {}
+    by = {}
+    for t in (data.get('trades') or []):
+        oid = str(t.get('orderId') or '')
+        if oid not in ids:
+            continue
+        try:
+            px = float(t.get('price') or 0)
+            amt = float(t.get('amount') or 0)
+            fee = float(t.get('fee') or 0)
+        except (TypeError, ValueError):
+            continue
+        if px <= 0 or amt <= 0:
+            continue
+        b = by.setdefault(oid, [0.0, 0.0, 0.0])
+        b[0] += px * amt
+        b[1] += amt
+        b[2] += fee
+    return {oid: {'vwap': b[0] / b[1], 'amount': b[1], 'fee': b[2]}
+            for oid, b in by.items()}
+
+
+def _exit_fill(client, oids):
+    """N7: aggregate real exit fill across order ids (OCO legs)
+    -> (vwap, amount, fee_usdt) or None"""
+    fills = _fills_for_orders(client, oids)
+    if not fills:
+        return None
+    px_amt = sum(f['vwap'] * f['amount'] for f in fills.values())
+    amt = sum(f['amount'] for f in fills.values())
+    fee = sum(f['fee'] for f in fills.values())
+    return (px_amt / amt if amt > 0 else None, amt, fee)
+
+
+def _entry_fill(client, led, sym):
+    """N7: (price, fee_usdt_equiv) of the LAST executed buy of sym from real
+    fills; fallback to ledger row price with zero fee. Buy fee is charged in
+    the coin itself -> converted at fill price."""
+    oid = None
+    px = None
+    for _, rr in (led.get('rows') or []):
+        if (rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
+                and rr[11].strip() in EXECUTED):
+            v = parse_price(rr[5])
+            if v:
+                px = v
+            fo = clean_oid(str(rr[10]).split('|')[0])
+            if fo and fo != '—':
+                oid = fo
+    if oid and client is not None:
+        f = _fills_for_orders(client, [oid]).get(oid)
+        if f:
+            return f['vwap'], f['fee'] * f['vwap']
+    return px, 0.0
+
+
 def apply_trailing(st, ws_t, led, prices, client=None):
     """SL/TP داینامیک — با رشد قیمت SL بالا کشیده می‌شود (قفل سود)
 
@@ -1028,8 +1104,22 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
                 break
         # Fix-B: مهر P&L رفت‌وبرگشت (مبنای آخرین خرید) — کول‌داون ورود مجدد
         # و P&L محقق گزارش از پیام ردیف‌های فروش می‌خوانند
-        entry_b = _last_buy_price(led, sym) or p.get('entry_price') or price
-        pnl_b = sold * (price - entry_b) if (price and entry_b) else None
+        # N7: real exit fill from the marked row's order ids (OCO legs)
+        _sell_fee_n7 = 0.0
+        if marked_row is not None:
+            _oids = [clean_oid(x) for x in str(marked_row[1][10]).split('|')]
+            _oids = [x for x in _oids if x and x != '—']
+            _xf = _exit_fill(client, _oids)
+            if _xf and _xf[0]:
+                price = _xf[0]
+                if _xf[1]:
+                    sold = _xf[1]
+                ws_t.update_cell(marked_row[0], 6, fmt_price(price))
+                ws_t.update_cell(marked_row[0], 7, sold)
+                _sell_fee_n7 = _xf[2]
+        _entry_n7, _buy_fee_n7 = _entry_fill(client, led, sym)
+        entry_b = _entry_n7 or p.get('entry_price') or price
+        pnl_b = (sold * (price - entry_b) - _sell_fee_n7 - _buy_fee_n7) if (price and entry_b) else None
         if marked_row is not None:
             _stamp_pnl(ws_t, marked_row[0], marked_row[1][12], pnl_b)
         if marked_row is None:
@@ -1042,11 +1132,11 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
                              'ردیف جبران — بستن پوزیشن تخلیه‌شده از کیف پول' + ('' if pnl_b is None else ' | P&L: %+.2f' % pnl_b)])
             log.info('ردیف جبران دفتر درج شد: فروش %s | %s @ %s',
                      sym, sold, fmt_price(price))
-        e_time = next((rr[0] for _, rr in led['rows']
+        e_time = next((rr[0] for _, rr in reversed(led['rows'])
                        if rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
                        and rr[11].strip() in EXECUTED), '—')
-        record_closed(ws_t, sym, e_time, p.get('entry_price') or price, price,
-                      sold, 'خروج از کیف پول (OCO یا فروش دستی)', 'واقعی')
+        record_closed(ws_t, sym, e_time, _entry_n7 or p.get('entry_price') or price, price,
+                      sold, 'خروج از کیف پول (OCO یا فروش دستی)', 'واقعی', fee_usdt=_sell_fee_n7 + _buy_fee_n7)
         led['positions'].pop(sym, None)
         led['pending_sells'].discard(sym)
         led['pending'].discard(sym)
