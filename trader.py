@@ -512,7 +512,7 @@ def sync_order_statuses(ws_t, led, client, st=None):
             entry_b = entry_n7
             exit_b = exit_n7
             if entry_b and exit_b and vol_c:
-                _stamp_pnl(ws_t, row_num, r[12], vol_c * (exit_b - entry_b) - sell_fee_n7 - buy_fee_n7)
+                _stamp_pnl(ws_t, row_num, r[12], vol_c * (exit_b - entry_b) - sell_fee_n7 - buy_fee_n7, now_ref=jnow())
 
         # OCO بومی صرافی — فقط در گذار خرید به «پر شد» (یک‌بار؛ در صورت شکست،
         # حفاظت SL/TP با خود ربات ادامه می‌یابد)
@@ -779,13 +779,14 @@ def _last_buy_price(led, sym):
     return p_
 
 
-def _stamp_pnl(ws_t, row_num, msg, pnl):
+def _stamp_pnl(ws_t, row_num, msg, pnl, now_ref=None):
     """مهر P&L در پیام ردیف فروش — idempotent (یک‌بار)؛ کول‌داون ورود مجدد
     و P&L محقق گزارش از همین می‌خوانند"""
     if pnl is None or 'P&L:' in str(msg):
         return
     try:
-        ws_t.update_cell(row_num, 13, (str(msg) + ' | P&L: %+.2f' % pnl)[:250])
+        _t = now_ref or jnow()
+        ws_t.update_cell(row_num, 13, (str(msg) + ' | P&L: %+.2f @' % pnl + _t)[:250])
     except Exception:
         pass
 
@@ -1121,7 +1122,7 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
         entry_b = _entry_n7 or p.get('entry_price') or price
         pnl_b = (sold * (price - entry_b) - _sell_fee_n7 - _buy_fee_n7) if (price and entry_b) else None
         if marked_row is not None:
-            _stamp_pnl(ws_t, marked_row[0], marked_row[1][12], pnl_b)
+            _stamp_pnl(ws_t, marked_row[0], marked_row[1][12], pnl_b, now_ref=jnow())
         if marked_row is None:
             # N5: هیچ ردیف فروش بازی نبود (خروج از مسیر OCO بی‌شناسه / فروش دستی).
             # بدون ردیف پایانی، دفتر در تیک بعد همان پوزیشن را بازسازی و دوباره
@@ -1175,7 +1176,7 @@ def recent_losing_exit(led, sym, minutes):
     return False
 
 
-def losing_exits_count(led, sym, minutes):
+def losing_exits_count(led, sym, minutes, now_ref=None):
     """G3.2 anti-knife: count losing exits of sym within last N minutes
     (P&L stamp from Fix-B, or stop-loss reason). A symbol that keeps losing
     (ZEC pattern 1405/07/14: four entries while price fell 1450->1310)
@@ -1185,8 +1186,8 @@ def losing_exits_count(led, sym, minutes):
     try:
         import jdatetime as _jd
         import datetime as _dt
-        now = (_dt.datetime.now(_dt.timezone.utc)
-               + _dt.timedelta(hours=3, minutes=30)).replace(tzinfo=None)
+        now = now_ref or (_dt.datetime.now(_dt.timezone.utc)
+                          + _dt.timedelta(hours=3, minutes=30)).replace(tzinfo=None)
         n = 0
         for _, rr in led['rows']:
             if (rr[1].strip().upper() == sym and rr[2].strip() == 'فروش'
@@ -1200,8 +1201,11 @@ def losing_exits_count(led, sym, minutes):
                         pnl = None
                 if not ((pnl is not None and pnl < 0) or 'حد ضرر' in str(rr[4])):
                     continue
+                t_str = None
+                if ' @' in msg:
+                    t_str = msg.split(' @')[-1].strip()
                 try:
-                    t0 = _jd.datetime.strptime(str(rr[0]).strip(), '%Y/%m/%d %H:%M')
+                    t0 = _jd.datetime.strptime(t_str or str(rr[0]).strip(), '%Y/%m/%d %H:%M')
                     if (now - t0.togregorian()).total_seconds() < minutes * 60:
                         n += 1
                 except Exception:
