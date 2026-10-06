@@ -14,7 +14,7 @@ TRADING_KEYS = {'TRADING_ENABLED', 'DRY_RUN', 'MAX_DAILY_TRADES', 'ORDER_TYPE',
                 'ORDER_SIZE_USDT', 'MAX_OPEN_POSITIONS', 'MIN_USDT_BALANCE', 'DRY_START_USDT',
                 'SL_ATR_MULT', 'TP_ATR_MULT', 'USE_EXCHANGE_OCO',
                 'TRAIL_ENABLED', 'TRAIL_ACTIVATION_PCT', 'TRAIL_DISTANCE_PCT', 'DUST_USDT',
-                'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN'}
+                'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN', 'PUMP_GUARD_PCT', 'LOSS_STREAK_LIMIT', 'LOSS_STREAK_WINDOW_H'}
 GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK',
                    'INTERVAL_UNIVERSE_MIN', 'INTERVAL_SIGNALS_MIN', 'INTERVAL_BACKTEST_MIN',
                    'INTERVAL_WALLET_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME'}
@@ -39,7 +39,7 @@ DEFAULT_TRADING = {'TRADING_ENABLED': 'خیر', 'DRY_RUN': 'بله', 'MAX_DAILY_
                    'ORDER_TYPE': 'market', 'ORDER_SIZE_USDT': '50',
                    'MAX_OPEN_POSITIONS': '3', 'MIN_USDT_BALANCE': '20',
                    'DRY_START_USDT': '1000', 'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0', 'USE_EXCHANGE_OCO': 'خیر',
-                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30'}
+                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12'}
 DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
                    'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300',
                    'INTERVAL_UNIVERSE_MIN': '120', 'INTERVAL_SIGNALS_MIN': '5',
@@ -168,6 +168,21 @@ class Settings:
     def reentry_cooldown_min(self):
         """پس از خروج زیان‌ده (SL)، خرید همان نماد به این مدت ممنوع. 0 = خاموش"""
         return max(0.0, self._tnum('REENTRY_COOLDOWN_MIN', 30))
+
+    @property
+    def pump_guard_pct(self):
+        # G3.2: حداکثر فاصله قیمت از SMA20(1h) برای ورود (٪) — ضد تعقیب پامپ. 0 = خاموش
+        return min(50.0, max(0.0, self._tnum('PUMP_GUARD_PCT', 8)))
+
+    @property
+    def loss_streak_limit(self):
+        # G3.2: با این تعداد خروج زیان‌ده در بازه اخیر، خرید همان نماد ممنوع. 0 = خاموش
+        return min(10, max(0, int(self._tnum('LOSS_STREAK_LIMIT', 2))))
+
+    @property
+    def loss_streak_window_h(self):
+        # G3.2: بازه گارد ضد-چاقو (ساعت)
+        return min(72.0, max(1.0, self._tnum('LOSS_STREAK_WINDOW_H', 12)))
 
     @property
     def entry_ttl_min(self):

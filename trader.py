@@ -24,7 +24,8 @@ from datetime import datetime
 import requests
 
 from settings import load_env
-from strategy_engine import fmt_price
+from indicators import sma
+from strategy_engine import fetch_candles, fmt_price
 
 try:
     import datetime as _dt
@@ -1084,6 +1085,42 @@ def recent_losing_exit(led, sym, minutes):
     return False
 
 
+def losing_exits_count(led, sym, minutes):
+    """G3.2 anti-knife: count losing exits of sym within last N minutes
+    (P&L stamp from Fix-B, or stop-loss reason). A symbol that keeps losing
+    (ZEC pattern 1405/07/14: four entries while price fell 1450->1310)
+    must not be re-bought."""
+    if minutes <= 0:
+        return 0
+    try:
+        import jdatetime as _jd
+        import datetime as _dt
+        now = (_dt.datetime.now(_dt.timezone.utc)
+               + _dt.timedelta(hours=3, minutes=30)).replace(tzinfo=None)
+        n = 0
+        for _, rr in led['rows']:
+            if (rr[1].strip().upper() == sym and rr[2].strip() == 'فروش'
+                    and rr[11].strip() in EXECUTED):
+                msg = str(rr[12])
+                pnl = None
+                if 'P&L:' in msg:
+                    try:
+                        pnl = float(msg.split('P&L:')[1].strip().split()[0])
+                    except (ValueError, IndexError):
+                        pnl = None
+                if not ((pnl is not None and pnl < 0) or 'حد ضرر' in str(rr[4])):
+                    continue
+                try:
+                    t0 = _jd.datetime.strptime(str(rr[0]).strip(), '%Y/%m/%d %H:%M')
+                    if (now - t0.togregorian()).total_seconds() < minutes * 60:
+                        n += 1
+                except Exception:
+                    continue
+        return n
+    except Exception:
+        return 0
+
+
 def recent_failed_buy(led, sym, minutes):
     """آیا خرید این نماد در N دقیقه اخیر ناموفق بوده؟ (جلوگیری از کوبیدن هر چرخه)"""
     if minutes <= 0:
@@ -1263,6 +1300,7 @@ def run(sh, st, rows, state=None):
     else:
         open_pos = sum(1 for p in led['positions'].values()
                        if (p.get('real_volume') or 0) > 1e-12)
+    _pump_sma_cache = {}
     for sym in cands:
         a = agg[sym]
         if led['daily_count'] >= st.max_daily_trades:
@@ -1298,6 +1336,27 @@ def run(sh, st, rows, state=None):
             if tp_pct < 1.5 or sl_pct < 1.0:
                 log.info('خرید %s انجام نشد: باند SL/TP زیر حداقل هزینه (TP=%.2f٪، SL=%.2f٪)',
                          sym, tp_pct, sl_pct)
+                continue
+        # G3.2 momentum guard (ORCA 1405/07/14: entry near top of +17% rally
+        # -> loss): entry price must not be far above SMA20(1h)
+        if st.pump_guard_pct > 0:
+            sma_r = _pump_sma_cache.get(sym)
+            if sma_r is None:
+                c_g = fetch_candles(sym + 'USDT', '60', 60)
+                s_series = sma(c_g['c'], 20) if c_g and len(c_g.get('c') or ()) >= 20 else []
+                sma_r = s_series[-1] if s_series and s_series[-1] is not None else 0.0
+                _pump_sma_cache[sym] = sma_r
+            if sma_r and p > sma_r * (1 + st.pump_guard_pct / 100.0):
+                log.info('skip buy %s: momentum exhaustion - price %+.1f%% above SMA20(1h)',
+                         sym, (p / sma_r - 1) * 100.0)
+                continue
+        # G3.2 anti-knife (ZEC pattern 1405/07/14: repeated entries while
+        # price fell 1450->1310): N losing exits in window -> no re-entry
+        if st.loss_streak_limit > 0:
+            n_loss = losing_exits_count(led, sym, st.loss_streak_window_h * 60)
+            if n_loss >= st.loss_streak_limit:
+                log.info('skip buy %s: %d losing exits in last %dh - knife cooldown',
+                         sym, n_loss, st.loss_streak_window_h)
                 continue
         if dry:
             bal = st.dry_start_usdt - led['dry_net_spent']
