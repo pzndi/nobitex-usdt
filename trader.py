@@ -1328,7 +1328,7 @@ def write_effective_config(sh, st, state=None):
     try:
         try:
             ws = sh.worksheet(EFFECTIVE_TAB)
-        except gspread.WorksheetNotFound:
+        except Exception:   # WorksheetNotFound (gspread not imported in trader.py)
             ws = sh.add_worksheet(title=EFFECTIVE_TAB, rows=30, cols=4)
             ws.update(values=[['item', 'effective', 'derived'], ], range_name='A3:C3')
             ws.freeze(rows=3)
