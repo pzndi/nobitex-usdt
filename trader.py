@@ -563,6 +563,27 @@ def sync_order_statuses(ws_t, led, client, st=None):
                               sym_c, code2, str(data2)[:120])
 
 
+def _band_tag(st, row):
+    """G-band: display-only label of the SL/TP band source for the buy
+    ledger row. Implied ratio = (TP-entry)/(entry-SL) from the signal row;
+    equal to sheet ratio -> 'sheet', else -> 'backtest'. No trading logic."""
+    try:
+        sl_c, tp_c = parse_price(row[9]), parse_price(row[10])
+        px = parse_price(row[2]) or 0.0
+        if not (sl_c and tp_c and px) or px <= sl_c or tp_c <= px:
+            return ''
+        d_sl, d_tp = px - sl_c, tp_c - px
+        if d_sl <= 0 or d_tp <= 0:
+            return ''
+        ratio = d_tp / d_sl
+        sheet_ratio = (st.tp_atr_mult / st.sl_atr_mult) if st.sl_atr_mult else None
+        if sheet_ratio and abs(ratio - sheet_ratio) < 0.01:
+            return ' | band: sheet (SLx%.1f/TPx%.1f)' % (st.sl_atr_mult, st.tp_atr_mult)
+        return ' | band: backtest (ratio %.2f)' % ratio
+    except Exception:
+        return ''
+
+
 def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     row = a['best'][1]
     tf, sl, tp = row[1], row[9], row[10]
@@ -570,7 +591,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     if vol <= 0:
         return
     amount = round(st.order_size_usdt, 2)
-    reason = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم"
+    reason = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم" + _band_tag(st, row)
     if dry:
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
                      sl, tp, '—', ST_DRY, 'شبیه‌سازی — بدون ارسال به صرافی')
