@@ -123,7 +123,7 @@ def run_signals(sh, st, state):
 def run_wallet(sh, st, state):
     rows = state.get('last_rows') or []
     trader.refresh_wallet(sh, st, rows)
-    trader.update_report(sh, st, rows)
+    trader.update_report(sh, st, rows, client=trader.make_client())
 
 
 def main():

@@ -1608,7 +1608,7 @@ def refresh_wallet(sh, st, rows):
     log.info('تب کیف پول از API به‌روزرسانی شد (%d دارایی)', len(out))
 
 
-def update_report(sh, st, rows):
+def update_report(sh, st, rows, client=None):
     """گزارش عملکرد — از دفتر معاملات + قیمت لحظه‌ای
     P&L شناور: پوزیشن‌های باز × (قیمت فعلی − میانگین ورود)
     P&L محقق: جمع «P&L: …» ثبت‌شده در ردیف‌های فروش"""
@@ -1623,14 +1623,20 @@ def update_report(sh, st, rows):
 
     unreal = 0.0
     pos_value = 0.0
+    _rep_client = client or make_client()
     for sym, p in led['positions'].items():
         px = prices.get(sym)
         if px is None:
             continue
         pos_value += p['volume'] * px
-        if p.get('entry_price'):
-            unreal += p['volume'] * (px - p['entry_price'])
+        # G-float: real entry from exchange fills (N7 pattern) with ledger fallback;
+        # buy fee (charged in coin) converted at fill price and subtracted
+        entry_r, buy_fee_r = _entry_fill(_rep_client, led, sym)
+        entry_eff = entry_r or p.get('entry_price')
+        if entry_eff:
+            unreal += p['volume'] * (px - entry_eff) - (buy_fee_r or 0.0)
 
+    realized = 0.0
     realized = 0.0
     closed = wins = 0
     for _, r in led['rows']:
