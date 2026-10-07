@@ -104,8 +104,12 @@ def run_signals(sh, st, state):
             if not c:
                 rows.append([sym, label, '', '', '—', '', '', '', '', '', '', 'خطا در دریافت کندل'])
                 continue
-            r = se.analyze(c, st, thr=bp.get('thr'), slm=bp.get('slm'), tpm=bp.get('tpm'),
-                           atr_ref=_ref_atr(st, sym, ref_cache))
+            # G-bt: per-symbol bt params only when enabled; otherwise sheet params rule all
+            if st.use_bt_params:
+                r = se.analyze(c, st, thr=bp.get('thr'), slm=bp.get('slm'), tpm=bp.get('tpm'),
+                               atr_ref=_ref_atr(st, sym, ref_cache))
+            else:
+                r = se.analyze(c, st, atr_ref=_ref_atr(st, sym, ref_cache))
             rows.append([sym, label, r['price'], r['trend'], r['signal'],
                          r['strength'], r['buy'], r['sell'], r['neutral'],
                          r['sl'], r['tp'], r['note']])

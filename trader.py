@@ -1350,6 +1350,8 @@ def write_effective_config(sh, st, state=None):
             ['knife guard', '%d losses in %.0fh' % (st.loss_streak_limit, st.loss_streak_window_h), 'Fix-3.2b'],
             ['momentum guard', '%.1f%% above SMA20(1h)' % st.pump_guard_pct, 'Fix-3.2'],
             ['caps', 'pos %d | clip %s | daily %d' % (st.max_open_positions, st.order_size_usdt, st.max_daily_trades), ''],
+            ['bt override', 'on' if getattr(st, 'use_bt_params', True) else 'off',
+             '%d symbols' % len((state or {}).get('bt_params') or {})],
             ['mode', 'DRY' if st.dry_run else 'LIVE', 'trading %s' % ('on' if st.trading_enabled else 'OFF')],
         ]
         ws.update(values=[['Effective config (per signals tick)', 'updated:', jnow()]],
