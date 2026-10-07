@@ -64,6 +64,7 @@ TRADES_TAB = ORDERS_TAB        # سازگاری: دفتر و گزارش از س�
 WALLET_TAB = 'کیف پول'
 UNIVERSE_TAB = 'dynamic universe'
 REPORT_TAB = 'گزارش'
+EFFECTIVE_TAB = 'کانفیگ مؤثر'   # F9-lite: effective config snapshot
 
 ST_DRY = 'شبیه‌سازی شده'
 ST_PLACED = 'ثبت‌شده'
@@ -1319,8 +1320,50 @@ def backfill_oco(st, ws_t, client, led, prices):
                  sym, fmt_price(sl), fmt_price(tp))
 
 
+def write_effective_config(sh, st, state=None):
+    """F9-lite: tab of effective config - written every signals cycle.
+    Makes any sheet edit (indicator on/off, threshold, timeframe) visible
+    in the same tick, e.g. 'votes needed: 3 of 5 -> 4 of 6'."""
+    import math as _m
+    try:
+        try:
+            ws = sh.worksheet(EFFECTIVE_TAB)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=EFFECTIVE_TAB, rows=30, cols=4)
+            ws.update(values=[['item', 'effective', 'derived'], ], range_name='A3:C3')
+            ws.freeze(rows=3)
+        voters = st.voting_indicators
+        nv = len(voters)
+        need = max(1, _m.ceil(nv * st.threshold_pct / 100.0))
+        tfs = [l for l, _ in st.active_timeframes]
+        maj = (len(tfs) + 1) // 2
+        rows = [
+            ['voting indicators', ','.join(voters), '%d voters' % nv],
+            ['votes needed per TF', '%d of %d' % (need, nv),
+             'threshold %.0f%%' % st.threshold_pct],
+            ['active timeframes', ','.join(tfs),
+             'candidate gate: %d of %d TFs' % (maj, len(tfs))],
+            ['SL/TP band', 'x%s / x%s ATR(%s)' % (st.sl_atr_mult, st.tp_atr_mult, st.sltp_timeframe[0]), ''],
+            ['trailing', 'act %.2f%% / dist %.2f%%' % (st.trail_activation_pct, st.trail_distance_pct),
+             'on' if st.trail_enabled else 'off'],
+            ['band guard (entry)', 'TP>=1.5% SL>=1.0%', 'Fix-3'],
+            ['knife guard', '%d losses in %.0fh' % (st.loss_streak_limit, st.loss_streak_window_h), 'Fix-3.2b'],
+            ['momentum guard', '%.1f%% above SMA20(1h)' % st.pump_guard_pct, 'Fix-3.2'],
+            ['caps', 'pos %d | clip %s | daily %d' % (st.max_open_positions, st.order_size_usdt, st.max_daily_trades), ''],
+            ['mode', 'DRY' if st.dry_run else 'LIVE', 'trading %s' % ('on' if st.trading_enabled else 'OFF')],
+        ]
+        ws.update(values=[['Effective config (per signals tick)', 'updated:', jnow()]],
+                  range_name='A1:C1')
+        n = max(18, len(rows) + 4)
+        data = rows + [[''] * 3] * (n - len(rows))
+        ws.update(values=data, range_name='A4:C%d' % (3 + n))
+    except Exception:
+        log.exception('effective-config tab write failed')
+
+
 def run(sh, st, rows, state=None):
     dry = st.dry_run
+    write_effective_config(sh, st, state)
     log.info('ماژول معاملات فعال — حالت: %s', 'شبیه‌سازی (DRY-RUN)' if dry else '⚠️ سفارش واقعی')
     ws_t = sh.worksheet(TRADES_TAB)
     client = make_client()
