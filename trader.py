@@ -1384,6 +1384,74 @@ def write_effective_config(sh, st, state=None):
         log.exception('effective-config tab write failed')
 
 
+def auto_block_update(sh, st):
+    """G-ablock: every 48h, compute worst 5 symbols from closed trades
+    (last 14 days, min 3 trades) and write to BLOCKED_SYMBOLS in the sheet.
+    Symbols in FREE_SYMBOLS are never auto-blocked. Display + guard only."""
+    import jdatetime as _jd
+    import datetime as _dt
+    from collections import defaultdict
+    try:
+        ws_set = sh.worksheet('تنظیمات')
+        ws_closed = sh.worksheet(CLOSED_TAB)
+        rows_c = ws_closed.get_all_values()
+
+        cutoff = (_dt.datetime.now(_dt.timezone.utc)
+                  + _dt.timedelta(hours=3, minutes=30)
+                  - _dt.timedelta(days=14)).replace(tzinfo=None)
+        cutoff_j = _jd.datetime.fromgregorian(datetime=cutoff)
+
+        stats = defaultdict(lambda: {'n': 0, 'pnl': 0.0})
+        for r in rows_c:
+            if len(r) < 8 or not str(r[1]).strip():
+                continue
+            try:
+                t0 = _jd.datetime.strptime(str(r[0]).strip(), '%Y/%m/%d %H:%M')
+                pnl = float(str(r[6]).replace(',', ''))
+            except (ValueError, TypeError):
+                continue
+            if t0 < cutoff_j:
+                continue
+            sym = str(r[1]).strip().upper()
+            stats[sym]['n'] += 1
+            stats[sym]['pnl'] += pnl
+
+        free = st.free_symbols
+        eligible = [(sym, s) for sym, s in stats.items()
+                    if s['n'] >= 3 and sym not in free]
+        eligible.sort(key=lambda kv: kv[1]['pnl'])  # بدترین (کمترین PnL) اول
+        worst5 = [sym for sym, s_ in eligible[:5] if s_['pnl'] < 0]
+
+        # نوشتن در شیت (key-based)
+        vals = ws_set.get_all_values()
+        for i, r in enumerate(vals, 1):
+            if str(r[0]).strip() == 'BLOCKED_SYMBOLS':
+                ws_set.update_acell('B%d' % i, ','.join(worst5) if worst5 else '')
+                break
+        else:
+            # درج در اولین ردیف خالی بخش معاملات
+            target = None
+            for i in range(31, len(vals) + 2):
+                if i > len(vals) or not any(str(c).strip() for c in vals[i-1]):
+                    target = i
+                    break
+            if target:
+                ws_set.update(values=[['BLOCKED_SYMBOLS',
+                                       ','.join(worst5) if worst5 else '',
+                                       '(خودکار G-ablock) بدترین ۵ نماد ۱۴ روز اخیر - قابل ویرایش']],
+                              range_name='A%d:C%d' % (target, target))
+
+        if worst5:
+            log.info('AUTO_BLOCK: blocked %d symbols: %s',
+                     len(worst5), ', '.join(worst5))
+        else:
+            log.info('AUTO_BLOCK: no symbols qualify for blocking')
+        return worst5
+    except Exception:
+        log.exception('AUTO_BLOCK update failed')
+        return []
+
+
 def run(sh, st, rows, state=None):
     dry = st.dry_run
     write_effective_config(sh, st, state)
@@ -1518,6 +1586,10 @@ def run(sh, st, rows, state=None):
                 log.info('skip buy %s: %d losing exits in last %dh - knife cooldown',
                          sym, n_loss, st.loss_streak_window_h)
                 continue
+        # G-ablock: operator/auto blocked symbols - no new entries
+        if sym in st.blocked_symbols:
+            log.info('skip buy %s: symbol blocked (BLOCKED_SYMBOLS)', sym)
+            continue
         if dry:
             bal = st.dry_start_usdt - led['dry_net_spent']
         else:
