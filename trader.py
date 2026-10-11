@@ -1021,22 +1021,93 @@ def apply_trailing(st, ws_t, led, prices, client=None):
         else:
             new_sl = price * (1 - st.trail_distance_pct / 100.0)
         # G-pexit: partial exit on first activation
+        # G-pexit-fix: cancel blocking OCO first, then sell, then re-place OCO
         if (st.partial_exit_pct > 0 and client is not None
                 and (p.get('real_volume') or 0) > 1e-12
                 and price >= entry_ref * (1 + st.partial_exit_trigger / 100.0)):
-            _pe_key = 'partial_exit_done_' + sym
-            if not getattr(apply_trailing, _pe_key, False):
+            import json as _json
+            import os as _os
+            _pe_state_file = 'state.json'
+            _pe_done = False
+            try:
+                _pe_state = _json.load(open(_pe_state_file, encoding='utf-8'))
+                _pe_done = _pe_state.get('partial_exit_done', {}).get(sym, False)
+            except Exception:
+                pass
+            if not _pe_done:
                 _pe_vol = p['real_volume'] * st.partial_exit_pct / 100.0
-                _pe_vol = min(_pe_vol, currency_available(client, sym) or _pe_vol)
+                _pe_active = currency_available(client, sym) or 0
+                if _pe_active < _pe_vol:
+                    # سکه‌ها بلوکه‌اند — OCO را لغو کن تا آزاد شوند
+                    _cancelled = False
+                    for _rn, _rr in led['rows']:
+                        if (str(_rr[1]).strip().upper() == sym
+                                and 'OCO' in str(_rr[4])
+                                and str(_rr[11]).strip() in OPENISH):
+                            _oids = [clean_oid(x) for x in str(_rr[10]).split('|')]
+                            _oids = [x for x in _oids if x and x != '—']
+                            for _oid in _oids:
+                                _c, _d = client.cancel_order(_oid)
+                                if _c in (200, 201):
+                                    _cancelled = True
+                            ws_t.update_cell(_rn, 12, ST_CANCELLED)
+                            log.info('G-pexit-fix: cancelled OCO %s for partial exit', sym)
+                            break
+                    if _cancelled:
+                        _pe_active = currency_available(client, sym) or 0
+                _pe_vol = min(_pe_vol, _pe_active)
                 if _pe_vol > 1e-12:
                     sell_one(st, ws_t, client, False, sym,
                              'خروج جزئی (+%.1f%%)' % st.partial_exit_trigger,
                              price, _pe_vol, led)
                     p['real_volume'] = max(0, p['real_volume'] - _pe_vol)
-                    setattr(apply_trailing, _pe_key, True)
-                    log.info('G-pexit: sold %.1f%% of %s at +%.1f%%',
+                    p['volume'] = max(0, p.get('volume', 0) - _pe_vol)
+                    led['positions'][sym] = p
+                    # OCO جدید با حجم باقیمانده
+                    _pe_remaining = p['real_volume']
+                    _pe_sl = p.get('sl')
+                    _pe_tp = p.get('tp')
+                    _pe_avail = currency_available(client, sym)
+                    if _pe_avail is not None:
+                        _pe_remaining = min(_pe_remaining, _pe_avail)
+                    if _pe_remaining > 1e-12 and _pe_sl and _pe_tp:
+                        _c2, _d2 = client.place_oco_sell(sym, _pe_remaining, _pe_tp, _pe_sl)
+                        _ok2 = _c2 == 200 and isinstance(_d2, dict) and _d2.get('status') == 'ok'
+                        if _ok2:
+                            _o2 = (_d2.get('order') or {}) if isinstance(_d2, dict) else {}
+                            _legs = []
+                            if isinstance(_o2, dict):
+                                for _k2 in ('id', 'pairId', 'orderId'):
+                                    if _o2.get(_k2):
+                                        _legs.append(clean_oid(_o2.get(_k2)))
+                            if isinstance(_d2, dict) and isinstance(_d2.get('orders'), list):
+                                for _lg2 in _d2['orders']:
+                                    if isinstance(_lg2, dict):
+                                        for _k2 in ('id', 'pairId', 'orderId'):
+                                            if _lg2.get(_k2):
+                                                _legs.append(clean_oid(_lg2.get(_k2)))
+                            record_trade(ws_t, 'فروش', sym, '', 'OCO حد سود/ضرر بومی صرافی',
+                                         fmt_price(_pe_tp), _pe_remaining,
+                                         round(_pe_remaining * _pe_tp, 2),
+                                         fmt_price(_pe_sl), fmt_price(_pe_tp),
+                                         '|'.join(dict.fromkeys(_legs)), ST_PLACED,
+                                         'OCO post-partial: TP=' + fmt_price(_pe_tp) + ' | SL=' + fmt_price(_pe_sl))
+                            led.setdefault('pending_sells', set()).add(sym)
+                            log.info('G-pexit-fix: OCO re-placed for %s | vol=%.6f | SL=%s',
+                                     sym, _pe_remaining, fmt_price(_pe_sl))
+                    # ذخیرهٔ فلگ در state.json
+                    try:
+                        _pe_state = _json.load(open(_pe_state_file, encoding='utf-8'))
+                    except Exception:
+                        _pe_state = {}
+                    _pe_state.setdefault('partial_exit_done', {})[sym] = True
+                    with open(_pe_state_file + '.tmp', 'w', encoding='utf-8') as _f:
+                        _json.dump(_pe_state, _f, ensure_ascii=False)
+                    _os.replace(_pe_state_file + '.tmp', _pe_state_file)
+                    log.info('G-pexit: sold %.1f%% of %s at +%.1f%% (state persisted)',
                              st.partial_exit_pct, sym, st.partial_exit_trigger)
-                    led['positions'][sym] = p  # update volume
+                else:
+                    log.warning('G-pexit %s: no sellable volume after OCO cancel', sym)
 
         if new_sl <= sl:
             continue
