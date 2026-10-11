@@ -88,6 +88,61 @@ def _num(raw, default):
         return float(default)
 
 
+# F9: دامنه‌های مجاز پارامترهای عددی — خارج دامنه → clamp + هشدار
+PARAM_RANGES = {
+    'SL_ATR_MULT':          (0.5, 5.0),
+    'TP_ATR_MULT':          (0.5, 10.0),
+    'ORDER_SIZE_USDT':      (1.0, 100.0),
+    'MAX_OPEN_POSITIONS':   (1, 20),
+    'MAX_DAILY_TRADES':     (1, 200),
+    'MIN_USDT_BALANCE':     (0.0, 100.0),
+    'DRY_START_USDT':       (1.0, 10000.0),
+    'TRAIL_ACTIVATION_PCT': (0.1, 10.0),
+    'TRAIL_DISTANCE_PCT':   (0.1, 10.0),
+    'SIGNAL_THRESHOLD_PCT': (40.0, 90.0),
+    'TOP_N':                (5, 30),
+    'CANDLE_LOOKBACK':      (50, 480),
+    'MIN_VOLUME_USDT':      (1000.0, 10000000.0),
+    'PARTIAL_EXIT_PCT':     (0.0, 90.0),
+    'PARTIAL_EXIT_TRIGGER': (0.1, 20.0),
+    'POSITION_TIMEOUT_H':   (0.0, 720.0),
+    'POSITION_TIMEOUT_MIN_PCT': (-50.0, 50.0),
+    'PULLBACK_PCT':         (0.0, 10.0),
+    'TRAIL_ATR_MULT':       (0.0, 3.0),
+    'MAX_SL_MULT':          (0.0, 5.0),
+    'LOSS_STREAK_LIMIT':    (0, 10),
+    'LOSS_STREAK_WINDOW_H': (1.0, 168.0),
+    'ORDER_FAIL_COOLDOWN_MIN': (0, 1440),
+    'ENTRY_TTL_MIN':        (0, 1440),
+    'REENTRY_COOLDOWN_MIN': (0, 1440),
+    'DUST_USDT':            (0.01, 10.0),
+    'PUMP_GUARD_PCT':       (0.0, 50.0),
+    'INTERVAL_UNIVERSE_MIN':   (5, 1440),
+    'INTERVAL_SIGNALS_MIN':    (1, 1440),
+    'INTERVAL_BACKTEST_MIN':   (5, 1440),
+    'INTERVAL_WALLET_MIN':     (1, 1440),
+}
+
+
+def _clamp(key, value, default):
+    """F9: clamp value to PARAM_RANGES[key]. Logs once if clamped."""
+    rng = PARAM_RANGES.get(key)
+    if rng is None:
+        return value
+    lo, hi = rng
+    original = value
+    if value < lo:
+        value = lo
+    elif value > hi:
+        value = hi
+    if value != original:
+        import logging
+        logging.getLogger('nobitex-bot').warning(
+            'F9 clamp: %s=%s outside [%s,%s] → clamped to %s',
+            key, original, lo, hi, value)
+    return value
+
+
 class Settings:
     def __init__(self):
         self.indicators = {k: {'enabled': en, 'params': parse_params(det)}
@@ -121,7 +176,7 @@ class Settings:
     # ---------- عمومی ----------
     @property
     def top_n(self):
-        return max(1, int(_num(self.general.get('TOP_N'), 10)))
+        return _clamp('TOP_N', max(1, int(_num(self.general.get('TOP_N'), 10))), 10)
 
     @property
     def min_volume(self):
@@ -129,11 +184,11 @@ class Settings:
 
     @property
     def threshold_pct(self):
-        return min(100.0, max(1.0, _num(self.general.get('SIGNAL_THRESHOLD_PCT'), 70)))
+        return _clamp('SIGNAL_THRESHOLD_PCT', min(100.0, max(1.0, _num(self.general.get('SIGNAL_THRESHOLD_PCT'), 70))), 70)
 
     @property
     def lookback(self):
-        return max(50, min(int(_num(self.general.get('CANDLE_LOOKBACK'), 300)), 480))
+        return _clamp('CANDLE_LOOKBACK', max(50, min(int(_num(self.general.get('CANDLE_LOOKBACK'), 300)), 480)), 300)
 
     @property
     def active_timeframes(self):
@@ -146,7 +201,8 @@ class Settings:
 
     # ---------- معاملات ----------
     def _tnum(self, key, default):
-        return _num(self.trading.get(key), default)
+        # F9: clamp applied automatically for all trading params
+        return _clamp(key, _num(self.trading.get(key), default), default)
 
     @property
     def trading_enabled(self):
@@ -311,7 +367,7 @@ class Settings:
 
     # ---------- بازه چرخه‌ها (دقیقه) — قابل تغییر از شیت ----------
     def _interval(self, key, default):
-        return max(1, int(_num(self.general.get(key), default)))
+        return _clamp(key, max(1, int(_num(self.general.get(key), default))), default)
 
     @property
     def interval_universe_min(self):
