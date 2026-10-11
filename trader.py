@@ -1634,6 +1634,94 @@ def write_effective_config(sh, st, state=None):
         log.exception('effective-config tab write failed')
 
 
+def archive_orders(sh, st, led=None, threshold=300, max_age_days=7):
+    """G-arch: archive old terminal rows from the orders ledger to 'آرشیو سفارشات'.
+    Only moves rows that are:
+      - status = cancelled or failed (no operational effect)
+      - older than max_age_days
+      - symbol has no open position or pending order
+    Never touches OPENISH/EXECUTED rows for active symbols.
+    Runs every 24h from scheduler; safe to run manually."""
+    import jdatetime as _jd
+    import datetime as _dt
+    try:
+        ws = sh.worksheet(ORDERS_TAB)
+        rows = ws.get_all_values()
+        if len(rows) <= threshold:
+            log.info('G-arch: ledger has %d rows (≤%d) — no archive needed', len(rows), threshold)
+            return 0
+
+        # پوزیشن‌های باز و pending — این نمادها هرگز آرشیو نمی‌شوند
+        if led is None:
+            led = read_ledger(ws, st.dust_usdt)
+        protected_syms = set(led.get('positions', {}).keys()) | set(led.get('pending', set()))
+
+        # مرز زمانی
+        cutoff = (_dt.datetime.now(_dt.timezone.utc)
+                  + _dt.timedelta(hours=3, minutes=30)
+                  - _dt.timedelta(days=max_age_days)).replace(tzinfo=None)
+        cutoff_j = _jd.datetime.fromgregorian(datetime=cutoff).strftime('%Y/%m/%d %H:%M')
+
+        # شناسایی ردیف‌های آرشیوشدنی
+        archivable = []
+        for i, r in enumerate(rows, 1):
+            if i <= 3:  # header rows
+                continue
+            if len(r) < 12:
+                continue
+            t = str(r[0]).strip()
+            sym = str(r[1]).strip().upper()
+            status = str(r[11]).strip()
+            if not t or t >= cutoff_j:
+                continue  # too recent
+            if sym in protected_syms:
+                continue  # active symbol
+            if status in (ST_CANCELLED, 'ناموفق'):  # لغو شده, ناموفق
+                archivable.append((i, r))
+
+        if not archivable:
+            log.info('G-arch: %d rows but 0 archivable (all recent or active)', len(rows))
+            return 0
+
+        # تب آرشیو — ساخت اگر نیست
+        ARCH_TAB = 'آرشیو سفارشات'
+        try:
+            arch = sh.worksheet(ARCH_TAB)
+        except Exception:
+            arch = sh.add_worksheet(title=ARCH_TAB, rows=200, cols=14)
+            arch.append_row(['ردیف اصلی'] +
+                           ['زمان', 'نماد',
+                            'عملیات', 'تایم‌فریم',
+                            'دلیل', 'قیمت', 'مقدار',
+                            'مبلغ', 'SL', 'TP',
+                            'شناسه', 'وضعیت', 'پیام'])
+            log.info('G-arch: created archive tab')
+
+        # کپی
+        arch.append_rows([[str(i)] + [str(c) for c in r] for i, r in archivable])
+
+        # حذف از دفتر (از پایین به بالا)
+        row_nums = [i for i, _ in archivable]
+        runs = []
+        for n in row_nums:
+            if runs and runs[-1][1] == n - 1:
+                runs[-1][1] = n
+            else:
+                runs.append([n, n])
+        reqs = [{'deleteDimension': {'range': {'sheetId': ws.id,
+                                              'dimension': 'ROWS',
+                                              'startIndex': a - 1, 'endIndex': b}}}
+                for a, b in sorted(runs, reverse=True)]
+        ws.spreadsheet.batch_update({'requests': reqs})
+
+        log.info('G-arch: archived %d rows (%d ranges) — ledger now %d rows',
+                 len(archivable), len(runs), len(rows) - len(archivable))
+        return len(archivable)
+    except Exception:
+        log.exception('G-arch: archive failed — ledger untouched')
+        return 0
+
+
 def auto_block_update(sh, st):
     """G-ablock: every 48h, compute worst 5 symbols from closed trades
     (last 14 days, min 3 trades) and write to BLOCKED_SYMBOLS in the sheet.
