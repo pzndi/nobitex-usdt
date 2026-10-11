@@ -525,8 +525,9 @@ def sync_order_statuses(ws_t, led, client, st=None):
             except (TypeError, ValueError):
                 vol_o = 0.0
             avail_o = currency_available(client, sym_c)
-            if avail_o is not None:
-                vol_o = min(vol_o, avail_o)
+            if avail_o is not None and avail_o > 1e-12:
+                # G-oco: کل موجودی active — پوشش سکه‌های سرگردان
+                vol_o = avail_o
             sl_o, tp_o = parse_price(r[8]), parse_price(r[9])
             if vol_o <= 1e-12 or not sl_o or not tp_o:
                 log.warning('OCO در sync برای %s رد شد: vol=%s | sl=%s | tp=%s | matchedAmount=%s',
@@ -657,8 +658,9 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
             sl_o, tp_o = parse_price(sl), parse_price(tp)
             vol_o = vol
             avail_o = currency_available(client, sym)
-            if avail_o is not None:
-                vol_o = min(vol_o, avail_o)
+            if avail_o is not None and avail_o > 1e-12:
+                # G-oco: OCO با کل موجودی active نماد — سکه‌های سرگردان پوشش می‌یابند
+                vol_o = avail_o
             if not (vol_o > 1e-12 and sl_o and tp_o):
                 log.warning('OCO فوری %s رد شد: موجودی فعال=%s | SL=%s | TP=%s — تور ایمنی چرخه بعد جبران می‌کند',
                             sym, avail_o, sl_o, tp_o)
@@ -1141,8 +1143,9 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                 ws_t.update_cell(oco_row[0], 12, ST_CANCELLED)
             vol_o = p['real_volume']
             avail = currency_available(client, sym)
-            if avail is not None:
-                vol_o = min(vol_o, avail)
+            if avail is not None and avail > 1e-12:
+                # G-oco: کل موجودی active — پوشش سکه‌های سرگردان
+                vol_o = avail
             tp_o = p.get('tp')
             if not (vol_o > 1e-12 and tp_o):
                 led['pending_sells'].discard(sym)
@@ -1352,6 +1355,25 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
         led['pending_sells'].discard(sym)
         led['pending'].discard(sym)
 
+    # ── G-oco: شناسایی سکه‌های سرگردان (active > غبار بدون پوزیشن دفتری) ──
+    try:
+        code_w, data_w = client.wallets()
+        for w in (data_w.get('wallets') or []):
+            _cur = str(w.get('currency') or '').strip().upper()
+            if _cur in ('USDT', 'RLS', ''):
+                continue
+            try:
+                _bal = float(w.get('activeBalance') or w.get('balance') or 0)
+            except (TypeError, ValueError):
+                _bal = 0
+            _px = prices.get(_cur) or _public_price(_cur)
+            if _bal > 1e-12 and _px and (_bal * _px) >= st.dust_usdt:
+                if _cur not in led['positions'] and _cur not in led.get('pending_sells', set()):
+                    log.warning('G-oco stray: %s has %.8f (%.2f USDT) active, no ledger position',
+                                _cur, _bal, _bal * _px)
+    except Exception:
+        pass
+
 
 def recent_losing_exit(led, sym, minutes):
     """آیا این نماد در N دقیقه اخیر خروج زیان‌ده داشته؟ (کول‌داون ورود مجدد)
@@ -1477,8 +1499,9 @@ def backfill_oco(st, ws_t, client, led, prices):
             log.info('OCO تور ایمنی %s رد شد: کیف پول در حال تخلیه (فعال=%s از %s) — جبران با reconcile',
                      sym, fmt_bal(avail), fmt_bal(rv))
             continue
-        if avail is not None:
-            vol_o = min(vol_o, avail)
+        if avail is not None and avail > 1e-12:
+            # G-oco: کل موجودی active — پوشش سکه‌های سرگردان
+            vol_o = avail
         if vol_o <= 1e-12:
             log.warning('OCO تور ایمنی %s: موجودی فعال صرافی صفر است', sym)
             continue
