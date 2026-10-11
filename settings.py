@@ -14,7 +14,7 @@ TRADING_KEYS = {'TRADING_ENABLED', 'DRY_RUN', 'MAX_DAILY_TRADES', 'ORDER_TYPE',
                 'ORDER_SIZE_USDT', 'MAX_OPEN_POSITIONS', 'MIN_USDT_BALANCE', 'DRY_START_USDT',
                 'SL_ATR_MULT', 'TP_ATR_MULT', 'USE_EXCHANGE_OCO',
                 'TRAIL_ENABLED', 'TRAIL_ACTIVATION_PCT', 'TRAIL_DISTANCE_PCT', 'DUST_USDT',
-                'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN', 'PUMP_GUARD_PCT', 'LOSS_STREAK_LIMIT', 'LOSS_STREAK_WINDOW_H', 'USE_BT_PARAMS'}
+                'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN', 'PUMP_GUARD_PCT', 'LOSS_STREAK_LIMIT', 'LOSS_STREAK_WINDOW_H', 'USE_BT_PARAMS', 'BLOCKED_SYMBOLS', 'FREE_SYMBOLS', 'MAX_SL_MULT'}
 GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK',
                    'INTERVAL_UNIVERSE_MIN', 'INTERVAL_SIGNALS_MIN', 'INTERVAL_BACKTEST_MIN',
                    'INTERVAL_WALLET_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME'}
@@ -39,7 +39,7 @@ DEFAULT_TRADING = {'TRADING_ENABLED': 'خیر', 'DRY_RUN': 'بله', 'MAX_DAILY_
                    'ORDER_TYPE': 'market', 'ORDER_SIZE_USDT': '50',
                    'MAX_OPEN_POSITIONS': '3', 'MIN_USDT_BALANCE': '20',
                    'DRY_START_USDT': '1000', 'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0', 'USE_EXCHANGE_OCO': 'خیر',
-                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله'}
+                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله', 'BLOCKED_SYMBOLS': '', 'FREE_SYMBOLS': '', 'MAX_SL_MULT': '1.5'}
 DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
                    'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300',
                    'INTERVAL_UNIVERSE_MIN': '120', 'INTERVAL_SIGNALS_MIN': '5',
@@ -175,6 +175,28 @@ class Settings:
         no = sheet params (SL/TP/threshold) rule ALL symbols; backtest tab
         stays informational."""
         return truthy(self.trading.get('USE_BT_PARAMS', 'بله'))
+
+    @property
+    def blocked_symbols(self):
+        """G-ablock: symbols blocked from buying (comma-separated, uppercase).
+        Auto-populated every 48h from closed-trade stats; operator can
+        remove entries manually (they move to FREE_SYMBOLS)."""
+        raw = str(self.trading.get('BLOCKED_SYMBOLS') or '')
+        return {s.strip().upper() for s in raw.split(',') if s.strip()}
+
+    @property
+    def free_symbols(self):
+        """G-ablock: symbols explicitly freed by operator - never auto-blocked."""
+        raw = str(self.trading.get('FREE_SYMBOLS') or '')
+        return {s.strip().upper() for s in raw.split(',') if s.strip()}
+
+    @property
+    def max_sl_mult(self):
+        """G-maxsl: ceiling on SL multiplier from backtest edges.
+        Backtest may suggest x2.5 for high-volatility new symbols;
+        this caps it (e.g. 1.5) to limit worst-case loss per trade.
+        0 = no cap (backtest wins)."""
+        return max(0.0, self._tnum('MAX_SL_MULT', 1.5))
 
     @property
     def pump_guard_pct(self):

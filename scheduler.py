@@ -106,7 +106,11 @@ def run_signals(sh, st, state):
                 continue
             # G-bt: per-symbol bt params only when enabled; otherwise sheet params rule all
             if st.use_bt_params:
-                r = se.analyze(c, st, thr=bp.get('thr'), slm=bp.get('slm'), tpm=bp.get('tpm'),
+                # G-maxsl: cap backtest SL multiplier to limit worst-case loss
+                _slm = bp.get('slm')
+                if _slm is not None and st.max_sl_mult > 0:
+                    _slm = min(_slm, st.max_sl_mult)
+                r = se.analyze(c, st, thr=bp.get('thr'), slm=_slm, tpm=bp.get('tpm'),
                                atr_ref=_ref_atr(st, sym, ref_cache))
             else:
                 r = se.analyze(c, st, atr_ref=_ref_atr(st, sym, ref_cache))
@@ -140,6 +144,7 @@ def main():
     now = time.time()
 
     tasks = [
+        ('auto_block', 48 * 60, lambda: trader.auto_block_update(sh, st)),
         ('universe', st.interval_universe_min, lambda: run_universe(sh, st, state)),
         ('backtest', st.interval_backtest_min, lambda: run_backtest(sh, st, state)),
         ('signals', st.interval_signals_min, lambda: run_signals(sh, st, state)),
