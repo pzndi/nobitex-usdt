@@ -584,6 +584,41 @@ def _band_tag(st, row):
         return ''
 
 
+def se_prepare_atr(c):
+    """G-trail: compute ATR14 series from candle dict (pure python)."""
+    h, l, cl = c['h'], c['l'], c['c']
+    n = len(cl)
+    if n < 15:
+        return [None] * n
+    trs = [h[0] - l[0]]
+    for i in range(1, n):
+        trs.append(max(h[i] - l[i], abs(h[i] - cl[i-1]), abs(l[i] - cl[i-1])))
+    out = [None] * n
+    a = sum(trs[1:15]) / 14
+    out[14] = a
+    for i in range(15, n):
+        a = (a * 13 + trs[i]) / 14
+        out[i] = a
+    return out
+
+
+def _btc_trend_bearish():
+    """G-trend: True if BTC 4h SMA20 < SMA50 (bearish regime).
+    One API call, cached by caller if needed."""
+    try:
+        c = fetch_candles('BTCUSDT', '240', 100)
+        if not c or len(c.get('c') or ()):
+            return False
+        closes = c['c']
+        fa = sma(closes, 20)
+        sl2 = sma(closes, 50)
+        if fa[-1] is not None and sl2[-1] is not None:
+            return fa[-1] < sl2[-1]
+    except Exception:
+        pass
+    return False  # fail-open: if we can't check, don't block
+
+
 def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     row = a['best'][1]
     tf, sl, tp = row[1], row[9], row[10]
@@ -600,7 +635,12 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
         p['volume'] += vol
         p['sim_volume'] = p.get('sim_volume', 0.0) + vol
         return
-    code, data = client.place_order('buy', sym, price, vol, st.order_type == 'market', client_order_id=coid)
+    # G-entry: limit_pullback mode places limit at pullback price
+    _is_market = (st.order_type == 'market' and st.entry_mode != 'limit_pullback')
+    _limit_price = price
+    if not _is_market and st.entry_mode == 'limit_pullback' and st.pullback_pct > 0:
+        _limit_price = price * (1 - st.pullback_pct / 100.0)
+    code, data = client.place_order('buy', sym, _limit_price, vol, _is_market, client_order_id=coid)
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
     oid = clean_oid(o.get('id') if isinstance(o, dict) else None or (data.get('id') if isinstance(data, dict) else ''))
@@ -694,6 +734,53 @@ def find_sl_tp_exits(positions, prices):
         elif price >= tp:
             exits.append((sym, 'حد سود', price))
     return exits
+
+
+def check_position_timeout(st, ws_t, client, dry, led, prices):
+    """G-timeout: sell positions older than POSITION_TIMEOUT_H
+    if unrealized P&L% is below POSITION_TIMEOUT_MIN_PCT."""
+    if st.position_timeout_h <= 0:
+        return
+    import jdatetime as _jd
+    import datetime as _dt
+    now = (_dt.datetime.now(_dt.timezone.utc)
+           + _dt.timedelta(hours=3, minutes=30)).replace(tzinfo=None)
+    for sym in list(led['positions']):
+        p = led['positions'].get(sym)
+        if not p:
+            continue
+        rv = p.get('real_volume') or 0
+        if rv <= 1e-12:
+            continue
+        # پیدا کردن زمان آخرین خرید
+        entry_t = None
+        for _, rr in reversed(led['rows']):
+            if (rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
+                    and rr[11].strip() in EXECUTED):
+                entry_t = rr[0]
+                break
+        if not entry_t:
+            continue
+        try:
+            t0 = _jd.datetime.strptime(str(entry_t).strip(), '%Y/%m/%d %H:%M')
+        except (ValueError, TypeError):
+            continue
+        age_h = (now - t0.togregorian()).total_seconds() / 3600
+        if age_h < st.position_timeout_h:
+            continue
+        px = prices.get(sym)
+        if px is None:
+            continue
+        entry = p.get('entry_price') or 0
+        if entry <= 0:
+            continue
+        pnl_pct = (px / entry - 1) * 100
+        if pnl_pct < st.position_timeout_min_pct:
+            log.info('G-timeout: %s held %.1fh with P&L %+.1f%% (min %.1f%%) - selling',
+                     sym, age_h, pnl_pct, st.position_timeout_min_pct)
+            exit_position(st, ws_t, client, sym,
+                          'انقضای مدت (%.0fh)' % st.position_timeout_h,
+                          px, led)
 
 
 def check_sl_tp(st, ws_t, client, dry, led, prices):
@@ -920,7 +1007,37 @@ def apply_trailing(st, ws_t, led, prices, client=None):
             set_sheet_sl(oco_sl)
             log.info('SL شیت %s به SL واقعی صرافی هم‌راستا شد: %s', sym, fmt_price(oco_sl))
 
-        new_sl = price * (1 - st.trail_distance_pct / 100.0)
+        # G-trail: ATR-based trailing distance (per-symbol volatility)
+        if st.trail_atr_mult > 0:
+            _c = fetch_candles(sym + 'USDT', '60', 100)
+            _atr = None
+            if _c and len(_c.get('c') or ()):
+                _v = se_prepare_atr(_c)
+                _atr = _v[-1] if _v and _v[-1] else None
+            if _atr:
+                new_sl = price - st.trail_atr_mult * _atr
+            else:
+                new_sl = price * (1 - st.trail_distance_pct / 100.0)
+        else:
+            new_sl = price * (1 - st.trail_distance_pct / 100.0)
+        # G-pexit: partial exit on first activation
+        if (st.partial_exit_pct > 0 and client is not None
+                and (p.get('real_volume') or 0) > 1e-12
+                and price >= entry_ref * (1 + st.partial_exit_trigger / 100.0)):
+            _pe_key = 'partial_exit_done_' + sym
+            if not getattr(apply_trailing, _pe_key, False):
+                _pe_vol = p['real_volume'] * st.partial_exit_pct / 100.0
+                _pe_vol = min(_pe_vol, currency_available(client, sym) or _pe_vol)
+                if _pe_vol > 1e-12:
+                    sell_one(st, ws_t, client, False, sym,
+                             'خروج جزئی (+%.1f%%)' % st.partial_exit_trigger,
+                             price, _pe_vol, led)
+                    p['real_volume'] = max(0, p['real_volume'] - _pe_vol)
+                    setattr(apply_trailing, _pe_key, True)
+                    log.info('G-pexit: sold %.1f%% of %s at +%.1f%%',
+                             st.partial_exit_pct, sym, st.partial_exit_trigger)
+                    led['positions'][sym] = p  # update volume
+
         if new_sl <= sl:
             continue
 
@@ -1463,6 +1580,8 @@ def run(sh, st, rows, state=None):
         return
 
     agg = aggregate_signals(rows)
+    # G-trend: one BTC trend check per cycle
+    run._btc_bearish = _btc_trend_bearish() if st.trend_filter_enabled else False
     prices = {str(r[0]).upper(): parse_price(r[2]) for r in rows if r and r[0]}
     led = read_ledger(ws_t, st.dust_usdt)
     # N2/Fix-A: snapshot پوزیشن‌ها «قبل از sync» — خروج‌هایی که sync در همین تیک
@@ -1481,6 +1600,7 @@ def run(sh, st, rows, state=None):
 
     # ۰) اجرای خودکار حد ضرر/حد سود — با اولویت بالا، قبل از سیگنال‌ها
     apply_trailing(st, ws_t, led, prices, client)
+    check_position_timeout(st, ws_t, client, dry, led, prices)
     check_sl_tp(st, ws_t, client, dry, led, prices)
 
     # شمارش روزانه: فقط معاملات خود ربات (تطبیق orderId با دفتر سفارشات)
@@ -1586,6 +1706,11 @@ def run(sh, st, rows, state=None):
                 log.info('skip buy %s: %d losing exits in last %dh - knife cooldown',
                          sym, n_loss, st.loss_streak_window_h)
                 continue
+        # G-trend: market regime filter - skip all buys when BTC bearish
+        if st.trend_filter_enabled and getattr(run, '_btc_bearish', False):
+            if sym == list(cands)[0]:  # log once per cycle
+                log.info('skip buy %s: market regime bearish (BTC 4h SMA20<SMA50)', sym)
+            continue
         # G-ablock: operator/auto blocked symbols - no new entries
         if sym in st.blocked_symbols:
             log.info('skip buy %s: symbol blocked (BLOCKED_SYMBOLS)', sym)
