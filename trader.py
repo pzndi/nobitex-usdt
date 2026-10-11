@@ -703,6 +703,36 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
                     log.error('ثبت OCO برای %s ناموفق (HTTP %s): %s — SL/TP توسط خود ربات',
                               sym, code2, str(data2)[:120])
     else:
+        _is_ump = (isinstance(data, dict) and data.get('code') == 'UnexpectedMarketPrice')
+        if _is_ump and st.pullback_pct > 0:
+            # G-ump: قیمت سیگنال از بازار عقب مانده — retry با قیمت تازه
+            _fresh = _public_price(sym)
+            if _fresh and _fresh > 0:
+                _dev = abs(_fresh - price) / price * 100.0
+                if _dev < 2.0:
+                    _limit = _fresh * (1 - st.pullback_pct / 100.0)
+                    log.info('G-ump: retrying %s with fresh price %.6g (dev %.2f%%)',
+                             sym, _fresh, _dev)
+                    code, data = client.place_order('buy', sym, _limit, vol,
+                                                    False, client_order_id=coid)
+                    if code == 200 and isinstance(data, dict) and data.get('status') == 'ok':
+                        record_trade(ws_t, 'خرید', sym, tf, reason + ' (UMP retry)',
+                                     fmt_price(_fresh), vol, amount,
+                                     sl, tp, clean_oid((data.get('order') or {}).get('id') or ''),
+                                     ST_PLACED, str(data)[:80])
+                        _p = led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0,
+                                                               'real_volume': 0.0,
+                                                               'entry_price': None,
+                                                               'sl': None, 'tp': None})
+                        _p['volume'] += vol
+                        _p['real_volume'] = _p.get('real_volume', 0.0) + vol
+                        led['daily_count'] = led.get('daily_count', 0) + 1
+                        return
+                    else:
+                        log.warning('G-ump retry also failed for %s: HTTP %s', sym, code)
+                else:
+                    log.info('G-ump: %s price moved %.1f%% (>2%%) — skipping (rally too fast)',
+                             sym, _dev)
         log.error('ثبت سفارش واقعی خرید %s ناموفق: HTTP %s | %s', sym, code, str(data)[:150])
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
                      sl, tp, '', 'ناموفق', str(data)[:100])
@@ -1141,6 +1171,15 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                 continue
             if oco_row[0]:
                 ws_t.update_cell(oco_row[0], 12, ST_CANCELLED)
+            # G-blocked: اگر استاپ صرافی در حال پر شدن است → این چرخه رد شو
+            _av = currency_available(client, sym)
+            _tot = currency_available(client, sym, use_active=False)
+            _rv = p.get('real_volume') or 0
+            if (_av is not None and _tot is not None
+                    and _rv > 1e-12 and _av < _rv * 0.5 and _tot >= _rv * 0.5):
+                log.info('G-blocked: OCO rebuild deferred for %s (exchange stop filling: active=%.6f total=%.6f)',
+                         sym, _av, _tot)
+                continue
             vol_o = p['real_volume']
             avail = currency_available(client, sym)
             if avail is not None and avail > 1e-12:
