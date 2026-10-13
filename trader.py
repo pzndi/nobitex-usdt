@@ -1057,15 +1057,14 @@ def apply_trailing(st, ws_t, led, prices, client=None):
         if (st.partial_exit_pct > 0 and client is not None
                 and (p.get('real_volume') or 0) > 1e-12
                 and price >= entry_ref * (1 + st.partial_exit_trigger / 100.0)):
-            import json as _json
-            import os as _os
             _pe_state_file = 'state.json'
-            _pe_done = False
-            try:
-                _pe_state = _json.load(open(_pe_state_file, encoding='utf-8'))
-                _pe_done = _pe_state.get('partial_exit_done', {}).get(sym, False)
-            except Exception:
-                pass
+            # G-pexit-fix2: فلگ از دفتر خوانده می‌شود (نه state.json)
+            # اگر ردیف «خروج جزئی» یا «OCO post-partial» برای این نماد هست → done
+            _pe_done = any(
+                ('خروج جزئی' in str(rr[4])
+                 or 'OCO post-partial' in str(rr[12]))
+                and str(rr[1]).strip().upper() == sym
+                for _, rr in led['rows'])
             if not _pe_done:
                 _pe_vol = p['real_volume'] * st.partial_exit_pct / 100.0
                 _pe_active = currency_available(client, sym) or 0
@@ -1127,15 +1126,7 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                             led.setdefault('pending_sells', set()).add(sym)
                             log.info('G-pexit-fix: OCO re-placed for %s | vol=%.6f | SL=%s',
                                      sym, _pe_remaining, fmt_price(_pe_sl))
-                    # ذخیرهٔ فلگ در state.json
-                    try:
-                        _pe_state = _json.load(open(_pe_state_file, encoding='utf-8'))
-                    except Exception:
-                        _pe_state = {}
-                    _pe_state.setdefault('partial_exit_done', {})[sym] = True
-                    with open(_pe_state_file + '.tmp', 'w', encoding='utf-8') as _f:
-                        _json.dump(_pe_state, _f, ensure_ascii=False)
-                    _os.replace(_pe_state_file + '.tmp', _pe_state_file)
+                    # فلگ در دفتر ثبت شده (OCO post-partial ردیف)
                     log.info('G-pexit: sold %.1f%% of %s at +%.1f%% (state persisted)',
                              st.partial_exit_pct, sym, st.partial_exit_trigger)
                 else:
