@@ -488,6 +488,15 @@ def sync_order_statuses(ws_t, led, client, st=None):
                      sym_c,
                      (getattr(st, 'use_exchange_oco', None) if st is not None else None),
                      sym_c in led.get('pending_sells', set()))
+            # P2-1 (fill-time): مهر زمان fill در ستون پیام — سن پوزیشن timeout و
+            # مدت نگهداری از fill محاسبه شوند نه زمان ثبت سفارش (شاهد: BAT با سن
+            # کاذب 18.1h در ۵ دقیقه پس از fill). یک‌بار؛ گارد fill@ دارد.
+            _msg = str(r[12] or '')
+            if 'fill@' not in _msg:
+                try:
+                    ws_t.update_cell(row_num, 13, (_msg + ' | fill@' + jnow())[:250])
+                except Exception:
+                    pass
 
         # معامله واقعی بسته شد: فروش کامل پر شد → ثبت در «اتمام معاملات»
         if r[2].strip() == 'فروش' and new_st == ST_FILLED:
@@ -503,7 +512,7 @@ def sync_order_statuses(ws_t, led, client, st=None):
             sell_fee_n7 = (_xf[2] if _xf else 0.0)
             entry_n7, buy_fee_n7 = _entry_fill(client, led, sym_c)
             entry_n7 = entry_n7 or entry_c
-            t_in = next((rr[0] for _, rr in reversed(led['rows'])
+            t_in = next((_fill_time_of(rr) for _, rr in reversed(led['rows'])
                          if rr[1].strip().upper() == sym_c and rr[2].strip() == 'خرید'
                          and rr[11].strip() in EXECUTED), '—')
             record_closed(ws_t, sym_c, t_in, entry_n7, exit_n7,
@@ -768,6 +777,15 @@ def find_sl_tp_exits(positions, prices):
     return exits
 
 
+def _fill_time_of(rr):
+    """P2-1: زمان fill ردیف خرید از مهر «fill@» در ستون پیام؛ fallback: زمان ثبت.
+    مبنای سن پوزیشن (timeout) و مدت معاملات بسته — نه زمان ثبت سفارش."""
+    msg = str(rr[12]) if len(rr) > 12 else ''
+    if 'fill@' in msg:
+        return msg.split('fill@', 1)[1][:16]
+    return rr[0]
+
+
 def check_position_timeout(st, ws_t, client, dry, led, prices):
     """G-timeout: sell positions older than POSITION_TIMEOUT_H
     if unrealized P&L% is below POSITION_TIMEOUT_MIN_PCT."""
@@ -789,7 +807,7 @@ def check_position_timeout(st, ws_t, client, dry, led, prices):
         for _, rr in reversed(led['rows']):
             if (rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
                     and rr[11].strip() in EXECUTED):
-                entry_t = rr[0]
+                entry_t = _fill_time_of(rr)
                 break
         if not entry_t:
             continue
