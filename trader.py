@@ -1869,6 +1869,25 @@ def auto_block_update(sh, st):
         return []
 
 
+def _sl_buffer_skip(a, st):
+    # G-slbuf (بهبود ۱): (skip, buf, fill_est) — آیا ورود به‌خاطر بافر SL ریز رد شود؟
+    # بافر = فاصلهٔ SL از قیمت fill تخمینی (limit_pullback: سیگنال×(1−پولبک) —
+    # همان فرمول buy_one). شواهد: وقتی 1.5×ATR < پولبک، fill روی استاپ می‌نشیند —
+    # XRP 0.07٪، SOL 0.13٪، ADA 0.31٪ → استاپ آنی؛ سطل [0–0.5٪): ۱۰/۱۶ استاپ.
+    # دادهٔ ناقص → False (fail-open: گارد کیفیت است، نه ایمنی).
+    row = (a.get('best') or (None, None))[1]
+    if row is None or len(row) < 10:
+        return False, None, None
+    p = parse_price(row[2])
+    sl = parse_price(row[9])
+    if not (p and sl and p > 0 and sl < p):
+        return False, None, None
+    mkt = (st.order_type == 'market' and st.entry_mode != 'limit_pullback')
+    fill = p if mkt else p * (1 - st.pullback_pct / 100.0)
+    buf = (fill - sl) / fill * 100.0
+    return (buf < 0.5), buf, fill
+
+
 def run(sh, st, rows, state=None):
     dry = st.dry_run
     write_effective_config(sh, st, state)
@@ -1985,6 +2004,14 @@ def run(sh, st, rows, state=None):
                 log.info('خرید %s انجام نشد: باند SL/TP زیر حداقل هزینه (TP=%.2f٪، SL=%.2f٪)',
                          sym, tp_pct, sl_pct)
                 continue
+        # G-slbuf (بهبود ۱): حداقل بافر SL نسبت به fill تخمینی — رد ورود وقتی
+        # 1.5×ATR از پولبک کوچک‌تر است (fill روی استاپ). حداقل ۰.۵٪؛ قابل ارتقا
+        # به کلید شیت پس از walk-forward
+        _skip_buf, _buf, _fill_est = _sl_buffer_skip(a, st)
+        if _skip_buf:
+            log.info('skip buy %s: SL buffer %.2f%% < 0.5%% at est. fill %.6g',
+                     sym, _buf, _fill_est)
+            continue
         # G3.2 momentum guard (ORCA 1405/07/14: entry near top of +17% rally
         # -> loss): entry price must not be far above SMA20(1h)
         if st.pump_guard_pct > 0:
