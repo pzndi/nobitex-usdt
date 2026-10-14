@@ -1173,6 +1173,18 @@ def apply_trailing(st, ws_t, led, prices, client=None):
         if has_oco:
             if client is None or (p.get('real_volume') or 0) <= 1e-12:
                 continue
+            # G-blocked-fix (P0-C): بررسی «استاپ در حال پرشدن» قبل از لغو OCO —
+            # آینهٔ واقعی Fix-4. قبلاً این بررسی بعد از لغو انجام می‌شد → استاپِ در حال
+            # اجرا قطع می‌شد و باقیمانده بدون OCO ردیابی‌شده می‌ماند (W/RSR/S در ۱۲ اکتبر)
+            _av0 = currency_available(client, sym)
+            _tot0 = currency_available(client, sym, use_active=False)
+            _rv0 = p.get('real_volume') or 0
+            if (_av0 is not None and _tot0 is not None
+                    and _rv0 > 1e-12 and _av0 < _rv0 * 0.5 and _tot0 >= _rv0 * 0.5):
+                log.info('G-blocked-fix: OCO rebuild deferred BEFORE cancel for %s '
+                         '(exchange stop filling: active=%.6f total=%.6f)',
+                         sym, _av0, _tot0)
+                continue
             old_ids = [clean_oid(x) for x in str(oco_row[1][10]).split('|')
                        if clean_oid(x) and clean_oid(x) != chr(8212)]
             cancel_ok = bool(old_ids)
