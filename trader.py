@@ -854,15 +854,35 @@ def sell_one(st, ws_t, client, dry, sym, reason, price, vol, led):
         return
     code, data = client.place_order('sell', sym, price, vol, st.exit_order_type == 'market')
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
+    # G-ump-sell: شکست قطعی UnexpectedMarketPrice = قیمت ارسالی از بازار فعلی عقب مانده؛
+    # یک تلاش مجدد با قیمت تازه (آینهٔ G-ump خرید — برای خروج فوریت بالاست پس حد sanity
+    # نسبت به خرید loosen است). مطابق X2: فقط روی پاسخ صریح failed، نه پاسخ گمشده.
+    if (not ok and code == 200 and isinstance(data, dict)
+            and data.get('status') == 'failed'
+            and data.get('code') == 'UnexpectedMarketPrice'):
+        _fresh = _public_price(sym)
+        if _fresh and _fresh > 0 and price and abs(_fresh - price) / price < 0.20:
+            log.info('G-ump-sell: retrying %s with fresh price %.6g (was %.6g)',
+                     sym, _fresh, price)
+            price = _fresh
+            amount = round(vol * price, 2)
+            if entry:
+                pnl = round(vol * price - vol * entry, 2)
+                pnl_msg = f' | P&L: {pnl:+.2f} USDT'
+            code, data = client.place_order('sell', sym, price, vol,
+                                            st.exit_order_type == 'market')
+            ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
     oid = clean_oid(o.get('id') if isinstance(o, dict) else None or (data.get('id') if isinstance(data, dict) else ''))
     if ok:
         record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
                      '—', '—', oid, ST_PLACED, str(data)[:80] + pnl_msg)
+        return True
     else:
         log.error('ثبت سفارش واقعی فروش %s ناموفق: HTTP %s | %s', sym, code, str(data)[:150])
         record_trade(ws_t, 'فروش', sym, '', reason, fmt_price(price), vol, amount,
                      '—', '—', '', 'ناموفق', str(data)[:100])
+        return False
 
 
 def exit_position(st, ws_t, client, sym, reason, price, led):
@@ -1060,8 +1080,11 @@ def apply_trailing(st, ws_t, led, prices, client=None):
             _pe_state_file = 'state.json'
             # G-pexit-fix2: فلگ از دفتر خوانده می‌شود (نه state.json)
             # اگر ردیف «خروج جزئی» یا «OCO post-partial» برای این نماد هست → done
+            # G-ump-sell: ردیف «ناموفق» فلگ را set نمی‌کند — شکست خروج جزئی باید
+            # در چرخهٔ بعد تلاش مجدد شود؛ ردیف‌های «ثبت‌شده»/«پر شد» (سفارش کارکردی)
+            # همچنان race-protection را حفظ می‌کنند
             _pe_done = any(
-                ('خروج جزئی' in str(rr[4])
+                (('خروج جزئی' in str(rr[4]) and str(rr[11]).strip() != 'ناموفق')
                  or 'OCO post-partial' in str(rr[12]))
                 and str(rr[1]).strip().upper() == sym
                 for _, rr in led['rows'])
@@ -1088,47 +1111,55 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                         _pe_active = currency_available(client, sym) or 0
                 _pe_vol = min(_pe_vol, _pe_active)
                 if _pe_vol > 1e-12:
-                    sell_one(st, ws_t, client, False, sym,
-                             'خروج جزئی (+%.1f%%)' % st.partial_exit_trigger,
-                             price, _pe_vol, led)
-                    p['real_volume'] = max(0, p['real_volume'] - _pe_vol)
-                    p['volume'] = max(0, p.get('volume', 0) - _pe_vol)
-                    led['positions'][sym] = p
-                    # OCO جدید با حجم باقیمانده
-                    _pe_remaining = p['real_volume']
-                    _pe_sl = p.get('sl')
-                    _pe_tp = p.get('tp')
-                    _pe_avail = currency_available(client, sym)
-                    if _pe_avail is not None:
-                        _pe_remaining = min(_pe_remaining, _pe_avail)
-                    if _pe_remaining > 1e-12 and _pe_sl and _pe_tp:
-                        _c2, _d2 = client.place_oco_sell(sym, _pe_remaining, _pe_tp, _pe_sl)
-                        _ok2 = _c2 == 200 and isinstance(_d2, dict) and _d2.get('status') == 'ok'
-                        if _ok2:
-                            _o2 = (_d2.get('order') or {}) if isinstance(_d2, dict) else {}
-                            _legs = []
-                            if isinstance(_o2, dict):
-                                for _k2 in ('id', 'pairId', 'orderId'):
-                                    if _o2.get(_k2):
-                                        _legs.append(clean_oid(_o2.get(_k2)))
-                            if isinstance(_d2, dict) and isinstance(_d2.get('orders'), list):
-                                for _lg2 in _d2['orders']:
-                                    if isinstance(_lg2, dict):
-                                        for _k2 in ('id', 'pairId', 'orderId'):
-                                            if _lg2.get(_k2):
-                                                _legs.append(clean_oid(_lg2.get(_k2)))
-                            record_trade(ws_t, 'فروش', sym, '', 'OCO حد سود/ضرر بومی صرافی',
-                                         fmt_price(_pe_tp), _pe_remaining,
-                                         round(_pe_remaining * _pe_tp, 2),
-                                         fmt_price(_pe_sl), fmt_price(_pe_tp),
-                                         '|'.join(dict.fromkeys(_legs)), ST_PLACED,
-                                         'OCO post-partial: TP=' + fmt_price(_pe_tp) + ' | SL=' + fmt_price(_pe_sl))
-                            led.setdefault('pending_sells', set()).add(sym)
-                            log.info('G-pexit-fix: OCO re-placed for %s | vol=%.6f | SL=%s',
-                                     sym, _pe_remaining, fmt_price(_pe_sl))
-                    # فلگ در دفتر ثبت شده (OCO post-partial ردیف)
-                    log.info('G-pexit: sold %.1f%% of %s at +%.1f%% (state persisted)',
-                             st.partial_exit_pct, sym, st.partial_exit_trigger)
+                    _ok_sell = sell_one(st, ws_t, client, False, sym,
+                                        'خروج جزئی (+%.1f%%)' % st.partial_exit_trigger,
+                                        price, _pe_vol, led)
+                    if not _ok_sell:
+                        # G-ump-sell: فروش جزئی ناموفق — حجم‌ها و OCO دست نمی‌خورند؛
+                        # ردیف «ناموفق» فلگ را set نمی‌کند → تلاش مجدد چرخهٔ بعد؛
+                        # تور ایمنی backfill سکه‌های آزادشده را پوشش می‌دهد
+                        log.warning('G-pexit %s: فروش جزئی ناموفق — به چرخهٔ بعد موکول', sym)
+                    else:
+                        p['real_volume'] = max(0, p['real_volume'] - _pe_vol)
+                        p['volume'] = max(0, p.get('volume', 0) - _pe_vol)
+                        led['positions'][sym] = p
+                        # OCO جدید با حجم باقیمانده
+                        _pe_remaining = p['real_volume']
+                        _pe_sl = p.get('sl')
+                        _pe_tp = p.get('tp')
+                        _pe_avail = currency_available(client, sym)
+                        if _pe_avail is not None:
+                            _pe_remaining = min(_pe_remaining, _pe_avail)
+                        if _pe_remaining > 1e-12 and _pe_sl and _pe_tp:
+                            _c2, _d2 = client.place_oco_sell(sym, _pe_remaining, _pe_tp, _pe_sl)
+                            _ok2 = _c2 == 200 and isinstance(_d2, dict) and _d2.get('status') == 'ok'
+                            if _ok2:
+                                _o2 = (_d2.get('order') or {}) if isinstance(_d2, dict) else {}
+                                _legs = []
+                                if isinstance(_o2, dict):
+                                    for _k2 in ('id', 'pairId', 'orderId'):
+                                        if _o2.get(_k2):
+                                            _legs.append(clean_oid(_o2.get(_k2)))
+                                if isinstance(_d2, dict) and isinstance(_d2.get('orders'), list):
+                                    for _lg2 in _d2['orders']:
+                                        if isinstance(_lg2, dict):
+                                            for _k2 in ('id', 'pairId', 'orderId'):
+                                                if _lg2.get(_k2):
+                                                    _legs.append(clean_oid(_lg2.get(_k2)))
+                                record_trade(ws_t, 'فروش', sym, '', 'OCO حد سود/ضرر بومی صرافی',
+                                             fmt_price(_pe_tp), _pe_remaining,
+                                             round(_pe_remaining * _pe_tp, 2),
+                                             fmt_price(_pe_sl), fmt_price(_pe_tp),
+                                             '|'.join(dict.fromkeys(_legs)), ST_PLACED,
+                                             'OCO post-partial: TP=' + fmt_price(_pe_tp) + ' | SL=' + fmt_price(_pe_sl))
+                                led.setdefault('pending_sells', set()).add(sym)
+                                log.info('G-pexit-fix: OCO re-placed for %s | vol=%.6f | SL=%s',
+                                         sym, _pe_remaining, fmt_price(_pe_sl))
+                            else:
+                                log.error('G-pexit %s: بازثبت OCO ناموفق (HTTP %s) — تور ایمنی چرخهٔ بعد جبران می‌کند',
+                                          sym, _c2)
+                        log.info('G-pexit: sold %.1f%% of %s at +%.1f%% (state persisted)',
+                                 st.partial_exit_pct, sym, st.partial_exit_trigger)
                 else:
                     log.warning('G-pexit %s: no sellable volume after OCO cancel', sym)
 
