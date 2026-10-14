@@ -497,6 +497,35 @@ def sync_order_statuses(ws_t, led, client, st=None):
                     ws_t.update_cell(row_num, 13, (_msg + ' | fill@' + jnow())[:250])
                 except Exception:
                     pass
+            # بهبود ۲ (G-fillanchor): SL/TP از قیمت واقعی fill بازمحاسبه — ریشهٔ
+            # «fill روی استاپ»: SL/TP ردیف لنگر قیمت سیگنال است ولی fill پولبکی
+            # ~۱٪ پایین‌تر رخ می‌دهد. ATR از خود ردیف بازیابی می‌شود
+            # (ATR = (سیگنال−SL)/ضریب) — سازگار با ریسک لحظهٔ تصمیم. fail-open.
+            try:
+                _fill_px = parse_price(o.get('averagePrice')) or parse_price(o.get('price'))
+                _p_sig = parse_price(r[5])
+                _sl_old, _tp_old = parse_price(r[8]), parse_price(r[9])
+                _slm = getattr(st, 'sl_atr_mult', 0) or 0
+                _tpm = getattr(st, 'tp_atr_mult', 0) or 0
+                if (_fill_px and _p_sig and _sl_old and _tp_old and _slm > 0
+                        and _tpm > 0 and abs(_fill_px / _p_sig - 1) < 0.20
+                        and _p_sig > _sl_old):
+                    _atr = (_p_sig - _sl_old) / _slm
+                    _sl_new = _fill_px - _slm * _atr
+                    _tp_new = _fill_px + _tpm * _atr
+                    if 0 < _sl_new < _fill_px < _tp_new:
+                        r[8] = fmt_price(_sl_new)
+                        r[9] = fmt_price(_tp_new)
+                        try:
+                            ws_t.update_cell(row_num, 9, r[8])
+                            ws_t.update_cell(row_num, 10, r[9])
+                        except Exception:
+                            pass
+                        log.info('G-fillanchor %s: SL %s → %s | TP %s → %s (fill=%.6g)',
+                                 sym_c, fmt_price(_sl_old), r[8],
+                                 fmt_price(_tp_old), r[9], _fill_px)
+            except Exception:
+                pass
 
         # معامله واقعی بسته شد: فروش کامل پر شد → ثبت در «اتمام معاملات»
         if r[2].strip() == 'فروش' and new_st == ST_FILLED:
