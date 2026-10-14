@@ -1299,25 +1299,52 @@ def cancel_stale_entries(st, ws_t, client, led):
         age_min = (time.time() - epoch) / 60.0
         if age_min < st.entry_ttl_min:
             continue
+        # G-cancel: apiv2 برای سفارش‌های دارای clientOrderId فیلد pairId در
+        # orders/list نمی‌فرستد → شناسه عددی از ردیف خرید باز همان نماد در دفتر
+        # (ثبت‌شده هنگام ثبت سفارش از پاسخ orders/add). آخرین ردیف منطبق برنده است.
         oid = clean_oid(o.get('pairId'))
-        code_c, data_c = client.cancel_order(oid or cid)
+        if not oid:
+            for _rn, _rr in led.get('rows') or []:
+                if (len(_rr) > 11 and str(_rr[1]).strip().upper() == sym
+                        and str(_rr[2]).strip() == 'خرید'
+                        and str(_rr[11]).strip() in OPENISH):
+                    _c = clean_oid(_rr[10])
+                    if _c.isdigit():
+                        oid = _c
+        if not oid:
+            log.warning('لغو سفارش کهنه %s ناموفق: شناسه عددی سفارش یافت نشد '
+                        '(pairId غایب و ردیف دفتر بدون oid)', sym)
+            continue
+        # تأیید هویت: شناسه دفتر باید به همین سفارش (cid) تعلق داشته و فعال باشد
+        try:
+            _cs, _ds = client.order_status(oid)
+            _ord = _ds.get('order') if isinstance(_ds, dict) else None
+            _ord = _ord if isinstance(_ord, dict) else {}
+            if str(_ord.get('clientOrderId') or '') != cid:
+                log.warning('لغو سفارش کهنه %s ناموفق: شناسه دفتر %s با سفارش زنده '
+                            'هم‌خوان نیست — رد شد', sym, oid)
+                continue
+            if str(_ord.get('status')) != 'Active':
+                log.info('سفارش کهنه %s فعال نیست (%s) — به همگام‌سازی واگذار شد',
+                         sym, _ord.get('status'))
+                continue
+        except Exception:
+            log.warning('لغو سفارش کهنه %s: استعلام وضعیت ناموفق — این چرخه رد شد', sym)
+            continue
+        code_c, data_c = client.cancel_order(oid)
         ok = (code_c in (200, 201)
               and not (isinstance(data_c, dict) and data_c.get('status') == 'failed'))
-        if (not ok and isinstance(data_c, dict)
-                and str(data_c.get('error')) == 'NotFound'):
-            ok = True  # از قبل لغو/حذف شده — نتیجه مطلوب حاصل است
-        if not ok and oid and cid:          # تلاش دوم با clientOrderId خودمان
-            code_c, data_c = client.cancel_order(cid)
-            ok = (code_c in (200, 201)
-                  and not (isinstance(data_c, dict) and data_c.get('status') == 'failed'))
         if ok:
-            if oid:
-                for row_num, rr in led['rows']:
-                    if oid in str(rr[10]).replace(',', ''):
-                        ws_t.update_cell(row_num, 12, ST_CANCELLED)
-                        break
+            for row_num, rr in led['rows']:
+                if oid in str(rr[10]).replace(',', ''):
+                    ws_t.update_cell(row_num, 12, ST_CANCELLED)
+                    break
             led['pending'].discard(sym)
             log.info('سفارش ورود کهنه لغو شد: %s (سن %.0f دقیقه)', sym, age_min)
+        elif isinstance(data_c, dict) and str(data_c.get('error')) == 'NotFound':
+            # سفارش در فاصله fetch→cancel از لیست خارج شده (fill/لغو بیرونی) —
+            # وضعیت واقعی را همگام‌سازی چرخه بعد تعیین می‌کند؛ دفتر دست نمی‌خورد
+            log.info('سفارش کهنه %s پیش از لغو از لیست خارج شد — به همگام‌سازی واگذار شد', sym)
         else:
             log.warning('لغو سفارش کهنه %s ناموفق: %s', sym, str(data_c)[:120])
 
