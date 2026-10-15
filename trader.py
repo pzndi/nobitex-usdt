@@ -1905,6 +1905,17 @@ def _sl_buffer_skip(a, st):
     return (buf < 0.5), buf, fill
 
 
+def _rank_candidates(agg):
+    # بهبود ۴ (G-rank): اولویت خرید = کیفیت سیگنال — اکثریت TF (نزولی)، سپس
+    # قوت بهترین TF (نزولی)؛ برابرها → ترتیب universe/نقدشوندگی (sort پایدار).
+    # تا پیش از این ترتیب خرید = ترتیب universe بود و «رتبه‌بندی برای سفارشگزاری»
+    # صرفاً نمایشی بود (ممیزی ۱۴۰۵/۰۷/۲۲ — cands بدون هیچ sort).
+    cands = [s for s, a in agg.items() if is_buy_candidate(a)]
+    cands.sort(key=lambda s: (-agg[s]['buys'],
+                              -(agg[s]['best'][0] if agg[s]['best'] else 0)))
+    return cands
+
+
 def run(sh, st, rows, state=None):
     dry = st.dry_run
     write_effective_config(sh, st, state)
@@ -1957,7 +1968,7 @@ def run(sh, st, rows, state=None):
             and 'OCO' not in str(rr[4])))
     log.info('معاملات امروز ربات: %d (اجراشده از API: %s)', led['daily_count'], api_count)
 
-    cands = [s for s, a in agg.items() if is_buy_candidate(a)]
+    cands = _rank_candidates(agg)
     log.info('کاندیدهای خرید این اجرا: %s', '، '.join(cands) if cands else 'هیچ')
 
     # ۱) فروش پوزیشن‌هایی که سیگنال فروش اکثریت گرفته‌اند
