@@ -76,7 +76,7 @@ ST_PENDING_STOP = 'در انتظار تریگر'
 EXECUTED = {ST_DRY, ST_FILLED, ST_PARTIAL}
 OPENISH = {ST_PLACED, ST_OPEN, ST_PENDING_STOP}
 
-MIN_TFS = 2
+MIN_TFS = 3  # بهبود: ورود نیازمند ≥۳ TF رأی خرید — کلاس 2/4 حذف (تحلیل ۱۵۵ پوزیشن؛ era-mixed)
 
 
 def record_closed(ws_t, sym, entry_time, entry_price, exit_price, vol, reason, mode, fee_usdt=0.0):
