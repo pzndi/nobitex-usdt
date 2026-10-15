@@ -1306,6 +1306,26 @@ def apply_trailing(st, ws_t, led, prices, client=None):
         log.info('SL متحرک %s: %s -> %s', sym, fmt_price(sl), fmt_price(new_sl))
 
 
+def _buy_reason(sym_rows):
+    # بهبود (G-reason): علت دقیق رأی خرید — TFهای خریدخور با قوتشان + یادداشت
+    # اندیکاتوری بهترین TF (note = دلایل رأی‌های غیرخنثی همان TF)
+    buys = [(str(x[1]).strip(), str(x[5]).strip(),
+             str(x[11]).strip() if len(x) > 11 else '')
+            for x in sym_rows if str(x[4]).strip() == 'خرید']
+    if not buys:
+        return '—'
+
+    def _num(s):
+        try:
+            return int(float(s))
+        except (TypeError, ValueError):
+            return 0
+    tf_list = ' + '.join(f'{tf}({st_}٪)' for tf, st_, _ in buys)
+    best_note = max(buys, key=lambda b: _num(b[1]))[2]
+    return (f'{len(buys)}/{len(sym_rows)} TF: {tf_list} | '
+            + (best_note[:110] if best_note else 'بدون یادداشت'))
+
+
 def write_ranking(sh, st, rows, led, bt_params=None):
     """رتبه‌بندی چرخه سیگنال — تب «معاملات»: آماده‌سازی ورود/TP/SL برای سفارشگزاری"""
     ws = sh.worksheet(RANKING_TAB)
@@ -1328,22 +1348,31 @@ def write_ranking(sh, st, rows, led, bt_params=None):
     for rank, (sym, (strength, r)) in enumerate(ordered, 1):
         price, tp, sl = parse_price(r[2]), parse_price(r[10]), parse_price(r[9])
         rr = round((tp - price) / (price - sl), 2) if (price and tp and sl and price > sl) else '—'
+        sym_rows = [x for x in rows if len(x) > 4 and str(x[0]).strip().upper() == sym
+                    and str(x[4]).strip() in ('خرید', 'فروش', 'خنثی')]
+        n_buys = sum(1 for x in sym_rows if str(x[4]).strip() == 'خرید')
+        n_sells = sum(1 for x in sym_rows if str(x[4]).strip() == 'فروش')
         if sym in led.get('positions', {}):
             status = 'پوزیشن باز'
         elif sym in led.get('pending', set()):
             status = 'سفارش باز'
+        elif (n_buys >= MIN_TFS and n_buys >= (len(sym_rows) + 1) // 2
+                and n_buys > n_sells):
+            status = 'کاندید خرید'  # معیار واقعی (سازگار با MIN_TFS/G-rank)
         else:
-            status = 'کاندید خرید' if r[4] == 'خرید' else '—'
+            status = '—'
+        reason = _buy_reason(sym_rows) if status == 'کاندید خرید' else '—'
         bp = bt_params.get(sym) or {}
         strat = (f"آستانه {bp['thr']}٪ | SL {bp['slm']}xATR | TP {bp['tpm']}xATR"
                  if bp else 'پیش‌فرض شیت تنظیمات')
         data.append([rank, sym, r[4], r[5], r[6], r[7], r[8],
-                     r[2], r[2], r[10], r[9], rr, strat, status])
+                     r[2], r[2], r[10], r[9], rr, strat, status, reason])
     n = max(20, len(data) + 4)
-    data = data + [[''] * 14] * (n - len(data))
+    data = data + [[''] * 15] * (n - len(data))
     ws.update(values=[['رتبه‌بندی لحظه‌ای برای سفارشگزاری — بازه: INTERVAL_SIGNALS_MIN در تب تنظیمات',
                        'به‌روزرسانی:', jnow()]], range_name='A1:C1')
-    ws.update(values=data, range_name=f'A4:N{3 + n}')
+    ws.update(values=[['علت رأی خرید (TFهای رأی‌داده + دلایل اندیکاتوری)']], range_name='O3')
+    ws.update(values=data, range_name=f'A4:O{3 + n}')
 
 
 def cancel_stale_entries(st, ws_t, client, led):
