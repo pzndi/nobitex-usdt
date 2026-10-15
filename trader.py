@@ -676,9 +676,11 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
         return
     # G-entry: limit_pullback mode places limit at pullback price
     _is_market = (st.order_type == 'market' and st.entry_mode != 'limit_pullback')
+    # بهبود ۳ (G-vpull): عمق پولبک volatility-based (نه ثابت شیت)
+    _pull_pct = _eff_pullback_pct(row, st) if (not _is_market and row) else st.pullback_pct
     _limit_price = price
-    if not _is_market and st.entry_mode == 'limit_pullback' and st.pullback_pct > 0:
-        _limit_price = price * (1 - st.pullback_pct / 100.0)
+    if not _is_market and st.entry_mode == 'limit_pullback' and _pull_pct > 0:
+        _limit_price = price * (1 - _pull_pct / 100.0)
     code, data = client.place_order('buy', sym, _limit_price, vol, _is_market, client_order_id=coid)
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
@@ -748,7 +750,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
             if _fresh and _fresh > 0:
                 _dev = abs(_fresh - price) / price * 100.0
                 if _dev < 2.0:
-                    _limit = _fresh * (1 - st.pullback_pct / 100.0)
+                    _limit = _fresh * (1 - _pull_pct / 100.0)
                     log.info('G-ump: retrying %s with fresh price %.6g (dev %.2f%%)',
                              sym, _fresh, _dev)
                     code, data = client.place_order('buy', sym, _limit, vol,
@@ -1900,7 +1902,8 @@ def _sl_buffer_skip(a, st):
     if not (p and sl and p > 0 and sl < p):
         return False, None, None
     mkt = (st.order_type == 'market' and st.entry_mode != 'limit_pullback')
-    fill = p if mkt else p * (1 - st.pullback_pct / 100.0)
+    _pp = st.pullback_pct if mkt else _eff_pullback_pct(row, st)
+    fill = p if mkt else p * (1 - _pp / 100.0)
     buf = (fill - sl) / fill * 100.0
     return (buf < 0.5), buf, fill
 
@@ -1914,6 +1917,22 @@ def _rank_candidates(agg):
     cands.sort(key=lambda s: (-agg[s]['buys'],
                               -(agg[s]['best'][0] if agg[s]['best'] else 0)))
     return cands
+
+
+def _eff_pullback_pct(row, st):
+    # بهبود ۳ (G-vpull): پولبک volatility-based — clamp(0.5×ATR٪, 0.3٪, 2.0٪).
+    # ATR از خود ردیف: (سیگنال−SL)/ضریب — سازگار با G-fillanchor. دادهٔ ناقص →
+    # st.pullback_pct (رفتار فعلی؛ fail-open).
+    try:
+        p = parse_price(row[2])
+        sl = parse_price(row[9])
+        slm = getattr(st, 'sl_atr_mult', 0) or 0
+        if p and sl and slm > 0 and 0 < sl < p:
+            atr_pct = (p - sl) / slm / p * 100.0
+            return min(max(0.5 * atr_pct, 0.3), 2.0)
+    except Exception:
+        pass
+    return st.pullback_pct
 
 
 def run(sh, st, rows, state=None):
