@@ -1362,17 +1362,19 @@ def write_ranking(sh, st, rows, led, bt_params=None):
         else:
             status = '—'
         reason = _buy_reason(sym_rows) if status == 'کاندید خرید' else '—'
+        tf_agg = f'خرید {n_buys}/{len(sym_rows)} · فروش {n_sells}/{len(sym_rows)}'
         bp = bt_params.get(sym) or {}
         strat = (f"آستانه {bp['thr']}٪ | SL {bp['slm']}xATR | TP {bp['tpm']}xATR"
                  if bp else 'پیش‌فرض شیت تنظیمات')
         data.append([rank, sym, r[4], r[5], r[6], r[7], r[8],
-                     r[2], r[2], r[10], r[9], rr, strat, status, reason])
+                     r[2], r[2], r[10], r[9], rr, strat, status, reason, tf_agg])
     n = max(20, len(data) + 4)
-    data = data + [[''] * 15] * (n - len(data))
+    data = data + [[''] * 16] * (n - len(data))
     ws.update(values=[['رتبه‌بندی لحظه‌ای برای سفارشگزاری — بازه: INTERVAL_SIGNALS_MIN در تب تنظیمات',
                        'به‌روزرسانی:', jnow()]], range_name='A1:C1')
     ws.update(values=[['علت رأی خرید (TFهای رأی‌داده + دلایل اندیکاتوری)']], range_name='O3')
-    ws.update(values=data, range_name=f'A4:O{3 + n}')
+    ws.update(values=[['رأی TFها (خرید/فروش)']], range_name='P3')
+    ws.update(values=data, range_name=f'A4:P{3 + n}')
 
 
 def cancel_stale_entries(st, ws_t, client, led):
