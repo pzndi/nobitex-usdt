@@ -167,7 +167,12 @@ def sec_errors(lines):
         print('  ✓ بدون خطا')
         return
     for i in idxs:
-        window = '\n'.join(lines[i:i + 28])
+        # پنجرهٔ داینامیک: تا ورودی بعدی لاگ (حداکثر ۶۰ خط) — tracebackهای
+        # دومرحله‌ای (ReadTimeout و...) کامل در می‌آیند
+        j = i + 1
+        while j < len(lines) and j < i + 60 and not lines[j][:5].isdigit():
+            j += 1
+        window = '\n'.join(lines[i:j])
         if 'Read timed out' in window or 'ReadTimeout' in window:
             kind = 'timeout خواندن (گوگل)'
         elif 'SSL' in window or 'ssl_wrap' in window:
