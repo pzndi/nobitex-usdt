@@ -82,12 +82,14 @@ def sec_positions():
     orders = (data.get('orders') or []) if isinstance(data, dict) else []
     print(f'  سفارش‌های باز صرافی: {len(orders)}')
     prot = set()
+    sells = []
     for o in orders:
         sym = str(o.get('srcCurrency') or '')
         typ = str(o.get('type') or '').lower()
         print(f"    {typ:9} | {sym[:20]:20} | px={o.get('price')} | amt={o.get('amount')}")
         if typ == 'sell':
             prot.add(sym.lower())
+            sells.append(o)
     code, wd = client.wallets()
     wl = wd.get('wallets') if isinstance(wd, dict) else None
     held = {}
@@ -104,6 +106,19 @@ def sec_positions():
     for cur, bal in sorted(held.items()):
         if cur in ('usdt', 'irt', 'rls') or cur in prot:
             continue
+        # نام ارز کیف پول با srcCurrency سفارش متفاوت است (s↔Sonic،
+        # bat↔BasicAttentionToken) → تطبیق با مقدار سفارش فروش (تلورانس ۲٪)
+        amt_cov = False
+        for so in sells:
+            try:
+                a = float(str(so.get('amount') or 0).replace(',', ''))
+            except (TypeError, ValueError):
+                continue
+            if a > 0 and abs(a - bal) / max(bal, 1e-12) < 0.02:
+                amt_cov = True
+                break
+        if amt_cov:
+            continue
         try:
             px = tr._public_price(cur.upper())
         except Exception:
@@ -113,7 +128,7 @@ def sec_positions():
             print(f'  ⚠ {cur}: {bal} (~{val or "?"} USDT) — بدون سفارش فروش باز')
             flagged = True
     if not flagged:
-        print('  ✓ همهٔ دارایی‌های غیرغبار پوشش فروش دارند')
+        print('  ✓ همهٔ دارایی‌های غیرغبار پوشش فروش دارند (تطبیق نام یا مقدار)')
 
 
 def sec_fixes(lines):
