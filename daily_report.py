@@ -3,7 +3,7 @@
 """
 daily_report.py — گزارش روزانهٔ سلامت/عملکرد (فقط-خواندن)
 بخش‌ها: سلامت | عملکرد امروز | پوزیشن‌ها+حفاظت | اثبات‌های fixها |
-خطاهای امروز (طبقه‌بندی) | انحراف تنظیمات از baseline عصر جدید | دیسک/بکاپ
+خطاهای امروز (طبقه‌بندی) | انحراف تنظیمات از baseline عصر جدید | دیسک/بکاپ | ریسک لحظه‌ای پوزیشن‌های باز
 """
 import os
 import re
@@ -221,12 +221,86 @@ def sec_disk():
         print('  بکاپ: ندارد ✓')
 
 
+def sec_risk():
+    print('=== ۸) ریسک لحظه‌ای پوزیشن‌های باز ===')
+    import trader as tr
+    fills = {}
+    try:
+        with open(LOG, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = re.search(r'G-fillanchor (\S+):.*\(fill=([\d.]+)\)', line)
+                if m:
+                    fills[m.group(1).upper()] = float(m.group(2))
+    except OSError:
+        pass
+    client = tr.make_client()
+    if not client:
+        print('  کلاینت API در دسترس نیست')
+        return
+    code, data = client.open_orders()
+    orders = (data.get('orders') or []) if isinstance(data, dict) else []
+    ocos = {}
+    for o in orders:
+        if str(o.get('type', '')).lower() != 'sell':
+            continue
+        sym = str(o.get('srcCurrency') or '').upper()
+        d = ocos.setdefault(sym, {})
+        if str(o.get('execution')) == 'Limit':
+            d['tp'] = float(o.get('price'))
+        else:
+            d['sl_trig'] = float(o.get('param1'))
+            d['sl_exec'] = float(o.get('price'))
+            d['vol'] = float(o.get('amount'))
+    code, wd = client.wallets()
+    held = {}
+    for w in (wd.get('wallets') or []):
+        try:
+            bal = float(str(w.get('balance') or 0).replace(',', ''))
+        except (TypeError, ValueError):
+            continue
+        if bal > 0:
+            held[str(w.get('currency') or '').lower()] = bal
+    if not ocos:
+        print('  — پوزیشن بازی نیست')
+        return
+    print(f'  {"نماد":5} | {"fill":>9} | {"قیمت":>9} | {"SLاجرا":>9} | {"بافر٪":>5} | '
+          f'{"تاSL٪":>5} | {"تاTP٪":>5} | {"ضرر استاپ":>9} | {"شناور":>8}')
+    tot_risk, tot_flt = 0.0, 0.0
+    for sym, d in sorted(ocos.items()):
+        short = sym
+        for cur, bal in held.items():
+            v = d.get('vol') or 0
+            if v > 0 and abs(v - bal) / max(bal, 1e-12) < 0.02:
+                short = cur.upper()
+                break
+        fill = fills.get(short)
+        try:
+            px = tr._public_price(short)
+        except Exception:
+            px = None
+        vol = d.get('vol') or 0
+        if not (fill and px and vol):
+            print(f'  {sym:5} | دادهٔ ناقص (fill={fill}, px={px})')
+            continue
+        buf = (fill - d['sl_trig']) / fill * 100
+        dsl = (px - d['sl_trig']) / px * 100
+        dtp = (d['tp'] - px) / px * 100
+        stop_loss = vol * (fill - d['sl_exec'])
+        flt = vol * (px - fill)
+        tot_risk += stop_loss
+        tot_flt += flt
+        print(f'  {short:5} | {fill:9.5f} | {px:9.5f} | {d["sl_exec"]:9.5f} | {buf:5.1f} | '
+              f'{dsl:5.1f} | {dtp:5.1f} | {stop_loss:+9.2f} | {flt:+8.2f}')
+    print(f'  — مجموع: ضرر در صورت استاپ = {tot_risk:.2f} | شناور = {tot_flt:+.2f} | '
+          f'USDT آزاد = {held.get("usdt", 0):.2f}')
+
+
 def main():
     lines = _log_lines()
     print(f'###### گزارش روزانه — {datetime.now().strftime("%Y-%m-%d %H:%M")} ######')
     for fn, arg in ((sec_health, lines), (sec_perf, lines), (sec_positions, None),
                     (sec_fixes, lines), (sec_errors, lines),
-                    (sec_settings, None), (sec_disk, None)):
+                    (sec_settings, None), (sec_disk, None), (sec_risk, None)):
         try:
             fn(arg) if arg is not None else fn()
         except Exception as e:
