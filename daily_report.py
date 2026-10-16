@@ -167,15 +167,17 @@ def sec_errors(lines):
         print('  ✓ بدون خطا')
         return
     for i in idxs:
-        window = '\n'.join(lines[i:i + 15])
+        window = '\n'.join(lines[i:i + 28])
         if 'Read timed out' in window or 'ReadTimeout' in window:
             kind = 'timeout خواندن (گوگل)'
-        elif 'SSL' in window or 'ssl' in window:
+        elif 'SSL' in window or 'ssl_wrap' in window:
             kind = 'SSL/برقراری اتصال'
         elif 'NameResolutionError' in window:
             kind = 'DNS'
         elif 'exceeds grid' in window:
             kind = 'grid شیت!'
+        elif 'ConnectionReset' in window or 'RemoteDisconnected' in window:
+            kind = 'قطع/ریست اتصال'
         else:
             kind = 'نامشخص (traceback را ببینید)'
         print(f'  {lines[i][:95]}  → {kind}')
