@@ -658,13 +658,47 @@ def _btc_trend_bearish():
     return False  # fail-open: if we can't check, don't block
 
 
+RISK_TARGET_USDT = 0.50  # گزینهٔ الف (G-volsize): سقف ریسک دلاری هر معامله — قابل ارتقا به کلید شیت
+MAX_SL_BAND_PCT = 8.0    # گزینهٔ ب (G-bandcap): سقف عرض استاپ ٪ — فیلتر دُم پرنوسان
+
+
+def _sl_width_pct(row, st):
+    """عرض استاپ تخمینی (٪ از fill): ضریبSL×ATR ÷ fill + اسلیپیج ۰.۵٪.
+    ATR از ردیف ((سیگنال−SL)÷ضریب)؛ fill تخمینی با پولبک G-vpull.
+    دادهٔ ناقص → None (fail-open)."""
+    try:
+        p = parse_price(row[2])
+        sl = parse_price(row[9])
+        slm = getattr(st, 'sl_atr_mult', 0) or 0
+        if p and sl and slm > 0 and 0 < sl < p:
+            atr = (p - sl) / slm
+            pull = _eff_pullback_pct(row, st) / 100.0
+            fill_est = p * (1 - pull)
+            if fill_est > 0:
+                return (slm * atr) / fill_est * 100.0 + 0.5
+    except Exception:
+        pass
+    return None
+
+
+def _eff_order_usdt(row, st):
+    """گزینهٔ الف (cap-style): min(ORDER_SIZE, RISK_TARGET ÷ عرض).
+    دادهٔ ناقص → ORDER_SIZE (رفتار فعلی)."""
+    w = _sl_width_pct(row, st)
+    if w and w > 0.5:
+        return min(st.order_size_usdt, RISK_TARGET_USDT / (w / 100.0))
+    return st.order_size_usdt
+
+
 def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     row = a['best'][1]
     tf, sl, tp = row[1], row[9], row[10]
-    vol = math.floor((st.order_size_usdt / price) * 1e8) / 1e8
+    # گزینهٔ الف (G-volsize): vol-targeted sizing — cap-style
+    _size = _eff_order_usdt(row, st)
+    vol = math.floor((_size / price) * 1e8) / 1e8
     if vol <= 0:
         return
-    amount = round(st.order_size_usdt, 2)
+    amount = round(_size, 2)
     reason = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم" + _band_tag(st, row)
     if dry:
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
@@ -2089,6 +2123,13 @@ def run(sh, st, rows, state=None):
         if _skip_buf:
             log.info('skip buy %s: SL buffer %.2f%% < 0.5%% at est. fill %.6g',
                      sym, _buf, _fill_est)
+            continue
+        # گزینهٔ ب (G-bandcap): سقف عرض استاپ — رد دُم پرنوسان (STRK 8.8٪،
+        # WAL 11.1٪ → رد؛ BAT 6.3٪ → عبور با سایزِ کاهش‌یافته از گزینهٔ الف)
+        _w_pct = _sl_width_pct(row, st)
+        if _w_pct is not None and _w_pct > MAX_SL_BAND_PCT:
+            log.info('skip buy %s: SL band %.1f%% > %.1f%% (high-volatility tail)',
+                     sym, _w_pct, MAX_SL_BAND_PCT)
             continue
         # G3.2 momentum guard (ORCA 1405/07/14: entry near top of +17% rally
         # -> loss): entry price must not be far above SMA20(1h)
