@@ -54,7 +54,7 @@ def sec_health(lines):
     if ticks:
         print('  آخرین تیک:', ticks[-1][:110])
     try:
-        out = subprocess.run(['pgrep', '-af', 'scheduler.py'],
+        out = subprocess.run(['pgrep', '-af', 'nobitex-usdt.*scheduler.py'],
                              capture_output=True, text=True).stdout.strip()
         print('  scheduler:', (out.splitlines()[0][:90] if out else 'بین تیک‌ها (طبیعی)'))
     except Exception:
