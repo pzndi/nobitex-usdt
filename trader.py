@@ -1806,6 +1806,30 @@ GUARDS_DEFS = [
 ]
 
 
+GUARDS_DUTY = {
+    'سقف روزانه معاملات': 'جلوگیری از ثبت بیش از حداکثر تعداد معامله در یک روز',
+    'پوزیشن/سفارش باز': 'جلوگیری از ورود همزمان به نمادی که پوزیشن باز دارد',
+    'same-cycle': 'جلوگیری از خرید مجدد نمادی که در همان چرخه بسته شده',
+    'کول‌داون ناموفق': 'صبر بعد از سفارش ناموفق (UnexpectedMarketPrice و غیره)',
+    'کول‌داون زیان‌ده': 'صبر بعد از خروج زیان‌ده برای جلوگیری از ورود مجدد سریع',
+    'سقف پوزیشن باز': 'جلوگیری از باز کردن پوزیشن جدید وقتی حداکثر پوزیشن‌های باز تکمیل شده',
+    'باند SL/TP': 'رد ورود اگر باند SL/TP زیر حداقل هزینه باشد (TP<1.5٪ یا SL<1.0٪)',
+    'G-slbuf': 'رد ورود اگر بافر SL نسبت به fill تخمینی کمتر از 0.5٪ باشد',
+    'G-bandcap': 'رد نمادهای پرنوسان (عرض SL > 8٪) مثل STRK و WAL',
+    'G-global': 'رد نمادهای بدون داده جهانی (mark=0) مثل COPXON و SLVON',
+    'G-premium': 'رد ورود اگر پریمیوم محلی/جهانی > 10٪ (ریسک نوسان تومانی)',
+    'G-mark-dev': 'رد ورود اگر قیمت محلی > 2٪ بالاتر از جهانی (پامپ محلی بدون پشتوانه)',
+    'مومنتوم 5٪': 'رد ورود اگر قیمت بیش از 5٪ بالاتر از SMA20(1h) باشد (اشباع خرید)',
+    'چاقو (knife)': 'صبر بعد از N خروج زیان‌ده در پنجره زمانی (جلوگیری از سقوط روی چاقو)',
+    'روند BTC 4h': 'مسدود کردن همه خریدها وقتی BTC نزولی است (SMA20<SMA50)',
+    'AUTO_BLOCK': 'مسدود کردن نمادهای زیان‌ده (هر 48 ساعت چرخه)',
+    'موجودی USDT': 'رد ورود اگر موجودی USDT کافی نباشد',
+    'limit TTL': 'لغو سفارش limit کهنه اگر پس از 60 دقیقه پر نشود',
+    'G-volsize': 'برابرسازی ریسک دلاری هر معامله (cap $0.50)',
+    'G-maxsl (بک‌تست)': 'محدود کردن ضریب SL از بک‌تست به 1.5× (جلوگیری از زیان شدید)',
+}
+
+
 def _guard_active(st, cond):
     if cond is True:
         return True
@@ -1822,11 +1846,11 @@ def write_guards_status(sh, st, state=None):
         try:
             ws = sh.worksheet(GUARDS_TAB)
         except Exception:
-            ws = sh.add_worksheet(title=GUARDS_TAB, rows=30, cols=7)
+            ws = sh.add_worksheet(title=GUARDS_TAB, rows=30, cols=8)
             ws.update(values=[['پایش زنده گاردها', 'به‌روزرسانی:', jnow()]],
                       range_name='A1:C1')
-            ws.update(values=[['نام گارد', 'وضعیت', 'آخرین رد', 'نماد', 'علت', 'تعداد امروز', 'یادداشت']],
-                      range_name='A3:G3')
+            ws.update(values=[['نام گارد', 'وظیفه', 'وضعیت', 'آخرین رد', 'نماد', 'علت', 'تعداد امروز', 'یادداشت']],
+                      range_name='A3:H3')
             ws.freeze(rows=3)
         today_str = _dt.now().strftime('%Y-%m-%d')
         log_path = _os.path.expanduser('~/nobitex-usdt/update.log')
@@ -1861,13 +1885,17 @@ def write_guards_status(sh, st, state=None):
             if cond is not True and cond is not False:
                 val = getattr(st, cond, 0)
                 note = '%s=%s' % (cond, val)
-            rows.append([name, status, last_time, last_sym, last_reason, count, note])
+            duty = GUARDS_DUTY.get(name, '')
+            rows.append([name, duty, status, last_time, last_sym, last_reason, count, note])
+        # گسترش ستون‌ها اگر تب قدیمی با 7 ستون ساخته شده بود
+        if ws.col_count < 8:
+            ws.add_cols(8 - ws.col_count)
         ws.update(values=[['پایش زنده گاردها', 'به‌روزرسانی:', jnow()]],
                   range_name='A1:C1')
-        ws.update(values=[['نام گارد', 'وضعیت', 'آخرین رد', 'نماد', 'علت', 'تعداد امروز', 'یادداشت']],
-                  range_name='A3:G3')
-        data = rows + [[''] * 7] * max(0, 25 - len(rows))
-        ws.update(values=data, range_name='A4:G%d' % (4 + len(data) - 1))
+        ws.update(values=[['نام گارد', 'وظیفه', 'وضعیت', 'آخرین رد', 'نماد', 'علت', 'تعداد امروز', 'یادداشت']],
+                  range_name='A3:H3')
+        data = rows + [[''] * 8] * max(0, 25 - len(rows))
+        ws.update(values=data, range_name='A4:H%d' % (4 + len(data) - 1))
     except Exception:
         log.exception('خطا در write_guards_status')
 
