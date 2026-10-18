@@ -1851,14 +1851,13 @@ def write_guards_status(sh, st, state=None):
             ws.update(values=[['نام گارد', 'وظیفه', 'وضعیت', 'آخرین رد', 'نماد', 'علت', 'تعداد امروز', 'یادداشت']],
                       range_name='A3:H3')
             ws.freeze(rows=3)
-        today_str = _dt.now().strftime('%Y-%m-%d')
         log_path = _os.path.expanduser('~/nobitex-usdt/update.log')
-        today_lines = []
+        recent_lines = []
         try:
             with open(log_path, encoding='utf-8') as f:
-                for line in f:
-                    if today_str in line:
-                        today_lines.append(line.strip())
+                lines = f.readlines()
+            # آخرین ۵۰۰ خط (حدود ۲۴-۴۸ ساعت)
+            recent_lines = [l.strip() for l in lines[-500:] if l.strip()]
         except Exception:
             pass
         rows = []
@@ -1869,7 +1868,7 @@ def write_guards_status(sh, st, state=None):
             last_time = '—'
             last_sym = '—'
             last_reason = '—'
-            for line in today_lines:
+            for line in recent_lines:
                 if pattern in line:
                     count += 1
                     last_time = line[:19].split(' ')[1] if ' ' in line else line[:19]
@@ -1891,7 +1890,7 @@ def write_guards_status(sh, st, state=None):
             ws.add_cols(8 - ws.col_count)
         ws.update(values=[['پایش زنده گاردها', 'به‌روزرسانی:', jnow()]],
                   range_name='A1:C1')
-        ws.update(values=[['نام گارد', 'وظیفه', 'وضعیت', 'آخرین رد', 'نماد', 'علت', 'تعداد امروز', 'یادداشت']],
+        ws.update(values=[['نام گارد', 'وظیفه', 'وضعیت', 'آخرین رد (۲۴س)', 'نماد', 'علت', 'تعداد (۲۴س)', 'یادداشت']],
                   range_name='A3:H3')
         data = rows + [[''] * 8] * max(0, 25 - len(rows))
         ws.update(values=data, range_name='A4:H%d' % (4 + len(data) - 1))
