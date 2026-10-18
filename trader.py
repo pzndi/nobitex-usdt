@@ -65,6 +65,7 @@ WALLET_TAB = 'کیف پول'
 UNIVERSE_TAB = 'dynamic universe'
 REPORT_TAB = 'گزارش'
 EFFECTIVE_TAB = 'کانفیگ مؤثر'   # F9-lite: effective config snapshot
+GUARDS_TAB = 'گاردها'            # G-guards: live guards status dashboard
 
 ST_DRY = 'شبیه‌سازی شده'
 ST_PLACED = 'ثبت‌شده'
@@ -1778,6 +1779,97 @@ def backfill_oco(st, ws_t, client, led, prices):
             pass
         log.info('OCO تور ایمنی %s ثبت شد (SL=%s | TP=%s)',
                  sym, fmt_price(sl), fmt_price(tp))
+
+
+# GUARDS_DEFS: (name, log_pattern, active_condition)
+GUARDS_DEFS = [
+    ('سقف روزانه معاملات',   'سقف معاملات روزانه',           True),
+    ('پوزیشن/سفارش باز',     'پوزیشن یا سفارش باز موجود',     True),
+    ('same-cycle',           'خروج در همین چرخه',            True),
+    ('کول‌داون ناموفق',       'سفارش ناموفق در',              'order_fail_cooldown_min'),
+    ('کول‌داون زیان‌ده',       'خروج زیان‌ده در',              'reentry_cooldown_min'),
+    ('سقف پوزیشن باز',       'سقف پوزیشن باز',               True),
+    ('باند SL/TP',           'باند SL/TP زیر حداقل',         True),
+    ('G-slbuf',              'SL buffer',                    True),
+    ('G-bandcap',            'SL band',                       True),
+    ('G-global',             'no global mark price',          True),
+    ('G-premium',            'local premium',                True),
+    ('G-mark-dev',           'above global mark',            True),
+    ('مومنتوم 5٪',           'momentum exhaustion',          'pump_guard_pct'),
+    ('چاقو (knife)',         'losing exits in last',         'loss_streak_limit'),
+    ('روند BTC 4h',          'market regime bearish',        'trend_filter_enabled'),
+    ('AUTO_BLOCK',           'symbol blocked',               True),
+    ('موجودی USDT',          'موجودی USDT کافی نیست',        True),
+    ('limit TTL',            'سفارش ورود کهنه لغو شد',       True),
+    ('G-volsize',            'G-volsize',                     True),
+    ('G-maxsl (بک‌تست)',      'G-maxsl',                      'use_bt_params'),
+]
+
+
+def _guard_active(st, cond):
+    if cond is True:
+        return True
+    if cond is False:
+        return False
+    return bool(getattr(st, cond, 0))
+
+
+def write_guards_status(sh, st, state=None):
+    """G-guards: live status of all guards + last trigger + today count"""
+    import os as _os, re as _re
+    from datetime import datetime as _dt
+    try:
+        try:
+            ws = sh.worksheet(GUARDS_TAB)
+        except Exception:
+            ws = sh.add_worksheet(title=GUARDS_TAB, rows=30, cols=7)
+            ws.update(values=[['پایش زنده گاردها', 'به‌روزرسانی:', jnow()]],
+                      range_name='A1:C1')
+            ws.update(values=[['نام گارد', 'وضعیت', 'آخرین رد', 'نماد', 'علت', 'تعداد امروز', 'یادداشت']],
+                      range_name='A3:G3')
+            ws.freeze(rows=3)
+        today_str = _dt.now().strftime('%Y-%m-%d')
+        log_path = _os.path.expanduser('~/nobitex-usdt/update.log')
+        today_lines = []
+        try:
+            with open(log_path, encoding='utf-8') as f:
+                for line in f:
+                    if today_str in line:
+                        today_lines.append(line.strip())
+        except Exception:
+            pass
+        rows = []
+        for name, pattern, cond in GUARDS_DEFS:
+            active = _guard_active(st, cond)
+            status = 'فعال' if active else 'غیرفعال'
+            count = 0
+            last_time = '—'
+            last_sym = '—'
+            last_reason = '—'
+            for line in today_lines:
+                if pattern in line:
+                    count += 1
+                    last_time = line[:19].split(' ')[1] if ' ' in line else line[:19]
+                    m = _re.search(r'(?:skip buy|خرید)\s+(\w+)', line)
+                    if m:
+                        last_sym = m.group(1)
+                    if ':' in line:
+                        parts = line.split(':', 2)
+                        if len(parts) >= 3:
+                            last_reason = parts[2].strip()[:60]
+            note = ''
+            if cond is not True and cond is not False:
+                val = getattr(st, cond, 0)
+                note = '%s=%s' % (cond, val)
+            rows.append([name, status, last_time, last_sym, last_reason, count, note])
+        ws.update(values=[['پایش زنده گاردها', 'به‌روزرسانی:', jnow()]],
+                  range_name='A1:C1')
+        ws.update(values=[['نام گارد', 'وضعیت', 'آخرین رد', 'نماد', 'علت', 'تعداد امروز', 'یادداشت']],
+                  range_name='A3:G3')
+        data = rows + [[''] * 7] * max(0, 25 - len(rows))
+        ws.update(values=data, range_name='A4:G%d' % (4 + len(data) - 1))
+    except Exception:
+        log.exception('خطا در write_guards_status')
 
 
 def write_effective_config(sh, st, state=None):
