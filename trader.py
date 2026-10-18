@@ -660,6 +660,32 @@ def _btc_trend_bearish():
 
 RISK_TARGET_USDT = 0.50  # گزینهٔ الف (G-volsize): سقف ریسک دلاری هر معامله — قابل ارتقا به کلید شیت
 MAX_SL_BAND_PCT = 8.0    # گزینهٔ ب (G-bandcap): سقف عرض استاپ ٪ — فیلتر دُم پرنوسان
+MAX_LOCAL_PREMIUM_PCT = 10.0   # G-premium: سقف پریمیوم محلی/جهانی
+MAX_MARK_DEVIATION_PCT = 2.0   # G-mark-dev: سقف فاصله قیمت محلی از جهانی
+_MARK_CACHE = {}               # کش موقت قیمت‌های mark برای هر چرخه
+
+
+def _public_mark(sym):
+    if sym in _MARK_CACHE:
+        return _MARK_CACHE[sym]
+    try:
+        pair = f'{sym.lower()}-usdt'
+        r = requests.post('https://apiv2.nobitex.ir/market/stats',
+                          json={'stats': pair},
+                          headers={'User-Agent': 'TraderBot/NobitexSheetBot-2.0'},
+                          timeout=15)
+        st_ = (r.json().get('stats') or {}).get(pair) or {}
+        mk = float(st_.get('mark') or 0)
+        val = mk if mk > 0 else None
+        _MARK_CACHE[sym] = val
+        return val
+    except Exception:
+        _MARK_CACHE[sym] = None
+        return None
+
+
+def clear_mark_cache():
+    _MARK_CACHE.clear()
 
 
 def _sl_width_pct(row, st):
@@ -2130,6 +2156,23 @@ def run(sh, st, rows, state=None):
         if _w_pct is not None and _w_pct > MAX_SL_BAND_PCT:
             log.info('skip buy %s: SL band %.1f%% > %.1f%% (high-volatility tail)',
                      sym, _w_pct, MAX_SL_BAND_PCT)
+            continue
+        # G-global: فقط نمادهایی که داده جهانی دارند (mark > 0)
+        _mark_px = _public_mark(sym)
+        if not _mark_px or _mark_px <= 0:
+            log.info('skip buy %s: no global mark price (no global data)', sym)
+            continue
+        # G-premium: رد اگر پریمیوم محلی/جهانی > 10٪ (ریسک تومانی)
+        _prem = (p / _mark_px - 1) * 100
+        if _prem > MAX_LOCAL_PREMIUM_PCT:
+            log.info('skip buy %s: local premium %.1f%% > %.1f%% (high toman premium)',
+                     sym, _prem, MAX_LOCAL_PREMIUM_PCT)
+            continue
+        # G-mark-dev: رد اگر قیمت محلی بیش از ۲٪ بالاتر از جهانی (پامپ محلی)
+        _dev = (p - _mark_px) / _mark_px * 100
+        if _dev > MAX_MARK_DEVIATION_PCT:
+            log.info('skip buy %s: local price %.1f%% above global mark (pump without global backing)',
+                     sym, _dev)
             continue
         # G3.2 momentum guard (ORCA 1405/07/14: entry near top of +17% rally
         # -> loss): entry price must not be far above SMA20(1h)

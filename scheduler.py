@@ -94,6 +94,7 @@ def run_signals(sh, st, state):
     symbols = state.get('universe') or []
     if not symbols:
         return False
+    trader.clear_mark_cache()  # G-global: refresh mark cache each cycle
     bt = state.get('bt_params') or {}
     ref_cache = {}
     rows = []
