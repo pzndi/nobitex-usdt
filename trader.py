@@ -717,31 +717,96 @@ def _eff_order_usdt(row, st):
     return st.order_size_usdt
 
 
+def _bb_lower_band(closes, period=20, std=2.0):
+    """G-scale: Bollinger lower band (pure python)."""
+    n = len(closes)
+    if n < period:
+        return None
+    slice_c = closes[-period:]
+    mean = sum(slice_c) / period
+    variance = sum((c - mean) ** 2 for c in slice_c) / period
+    return mean - std * (variance ** 0.5)
+
+
+def _calc_scaled_entries(sym, price, row, st):
+    """G-scale: Calculate 2 entry prices for scaling in.
+    Returns (price_fib, price_deep) or (None, None) if data unavailable."""
+    try:
+        c = fetch_candles(sym + 'USDT', '60', 100)
+        if not c or len(c.get('c', [])) < 25:
+            return None, None
+        closes, highs, lows = c['c'], c['h'], c['l']
+
+        # Level 1: Fibonacci 0.618 retracement
+        lookback = min(50, len(closes))
+        swing_high = max(highs[-lookback:])
+        swing_low = min(lows[-lookback:])
+        fib_618 = swing_high - (swing_high - swing_low) * 0.618
+
+        # Level 2: Bollinger lower band or 2xATR
+        bb_lo = _bb_lower_band(closes, 20, 2.0)
+        if bb_lo is None or bb_lo <= 0:
+            _atr_series = se_prepare_atr(c)
+            _atr_val = _atr_series[-1] if _atr_series and _atr_series[-1] else None
+            if _atr_val and _atr_val > 0:
+                bb_lo = price - 2 * _atr_val
+
+        # Validate and fallback
+        _pull = _eff_pullback_pct(row, st) / 100.0
+        price_fib = fib_618 if (fib_618 and 0 < fib_618 < price) else price * (1 - _pull)
+        price_deep = bb_lo if (bb_lo and 0 < bb_lo < price) else price * (1 - _pull * 2)
+
+        # Ensure deep is below fib
+        if price_deep >= price_fib:
+            price_deep = price_fib * 0.98
+
+        return price_fib, price_deep
+    except Exception:
+        return None, None
+
+
 def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     row = a['best'][1]
     tf, sl, tp = row[1], row[9], row[10]
     # گزینهٔ الف (G-volsize): vol-targeted sizing — cap-style
     _size = _eff_order_usdt(row, st)
-    vol = math.floor((_size / price) * 1e8) / 1e8
+    # G-scale: Calculate 2 entry prices for scaling in
+    _price1, _price2 = _calc_scaled_entries(sym, price, row, st)
+    if _price1 is None:
+        _pull = _eff_pullback_pct(row, st) / 100.0
+        _price1 = price * (1 - _pull)
+        _price2 = None
+    # Split volume: 50% each
+    _size1 = round(_size * 0.5, 2)
+    _size2 = round(_size - _size1, 2) if _price2 else 0
+    # Order 1 (Fib 0.618)
+    vol = math.floor((_size1 / _price1) * 1e8) / 1e8
     if vol <= 0:
         return
-    amount = round(_size, 2)
-    reason = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم" + _band_tag(st, row)
+    amount = round(_size1, 2)
+    reason = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 1/2 (Fib 0.618)" + _band_tag(st, row)
     if dry:
-        record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
-                     sl, tp, '—', ST_DRY, 'شبیه‌سازی — بدون ارسال به صرافی')
+        record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(_price1), vol, amount,
+                     sl, tp, '—', ST_DRY, 'شبیه‌سازی Scale 1/2 — بدون ارسال به صرافی')
         led['dry_net_spent'] += amount
         p = led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0, 'real_volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
         p['volume'] += vol
         p['sim_volume'] = p.get('sim_volume', 0.0) + vol
+        if _price2 and _size2 > 0:
+            vol2 = math.floor((_size2 / _price2) * 1e8) / 1e8
+            if vol2 > 0:
+                amount2 = round(_size2, 2)
+                reason2 = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 2/2 (BB/2xATR)" + _band_tag(st, row)
+                record_trade(ws_t, 'خرید', sym, tf, reason2, fmt_price(_price2), vol2, amount2,
+                             sl, tp, '—', ST_DRY, 'شبیه‌سازی Scale 2/2 — بدون ارسال به صرافی')
+                led['dry_net_spent'] += amount2
+                p['volume'] += vol2
+                p['sim_volume'] = p.get('sim_volume', 0.0) + vol2
         return
     # G-entry: limit_pullback mode places limit at pullback price
     _is_market = (st.order_type == 'market' and st.entry_mode != 'limit_pullback')
-    # بهبود ۳ (G-vpull): عمق پولبک volatility-based (نه ثابت شیت)
-    _pull_pct = _eff_pullback_pct(row, st) if (not _is_market and row) else st.pullback_pct
-    _limit_price = price
-    if not _is_market and st.entry_mode == 'limit_pullback' and _pull_pct > 0:
-        _limit_price = price * (1 - _pull_pct / 100.0)
+    # G-scale: Use pre-calculated scaled entry price
+    _limit_price = _price1
     code, data = client.place_order('buy', sym, _limit_price, vol, _is_market, client_order_id=coid)
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
@@ -752,6 +817,25 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
         p = led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0, 'real_volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
         p['volume'] += vol
         p['real_volume'] = p.get('real_volume', 0.0) + vol
+        # G-scale: Place second order at deep pullback level
+        if _price2 and _size2 > 0 and not _is_market:
+            vol2 = math.floor((_size2 / _price2) * 1e8) / 1e8
+            if vol2 > 0:
+                amount2 = round(_size2, 2)
+                reason2 = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 2/2 (BB/2xATR)" + _band_tag(st, row)
+                coid2 = (coid + '_s2') if coid else None
+                code2, data2 = client.place_order('buy', sym, _price2, vol2, False, client_order_id=coid2)
+                ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+                o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
+                oid2 = clean_oid(o2.get('id') if isinstance(o2, dict) else None or (data2.get('id') if isinstance(data2, dict) else ''))
+                if ok2:
+                    record_trade(ws_t, 'خرید', sym, tf, reason2, fmt_price(price), vol2, amount2,
+                                 sl, tp, oid2, ST_PLACED, str(data2)[:80])
+                    p2 = led['positions'].get(sym) or led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0, 'real_volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
+                    p2['volume'] += vol2
+                    p2['real_volume'] = p2.get('real_volume', 0.0) + vol2
+                else:
+                    log.error('ثبت سفارش دوم %s ناموفق: HTTP %s | %s', sym, code2, str(data2)[:150])
         if st.use_exchange_oco and st.order_type == 'market':
             # F5: کارمزد خرید از سکه دریافتی کسر می‌شود → حجم OCO باید به موجودی فعال کپ شود
             # F6: شناسه پایه‌ها از id/pairId/orderId + orders[] + fallback از open_orders؛
