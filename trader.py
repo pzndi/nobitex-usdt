@@ -1816,6 +1816,28 @@ def recent_failed_buy(led, sym, minutes):
     return False
 
 
+def _match_sym_orders(ex_orders, sym, sym_vol):
+    """G-oco-health: Match exchange sell orders by name (in-check) or amount."""
+    sym_lower = sym.lower()
+    matched = []
+    for o in ex_orders:
+        if str(o.get('type')) != 'sell':
+            continue
+        src = str(o.get('srcCurrency', '')).lower()
+        # Match by name: symbol in srcCurrency or vice versa
+        if sym_lower in src or src in sym_lower:
+            matched.append(o)
+            continue
+        # Fallback: match by amount (within 1% tolerance)
+        try:
+            amt = float(o.get('amount', 0) or 0)
+            if sym_vol > 0 and abs(amt - sym_vol) / sym_vol < 0.01:
+                matched.append(o)
+        except (TypeError, ValueError):
+            pass
+    return matched
+
+
 def oco_health_check(sh, st, state=None):
     """G-oco-health: Verify OCO legs on exchange every 10 min. Rebuild if broken/missing."""
     client = make_client()
@@ -1839,12 +1861,7 @@ def oco_health_check(sh, st, state=None):
         if rv <= 1e-12:
             continue
         
-        sym_lower = sym.lower()
-        sym_sell_orders = [
-            o for o in ex_orders 
-            if str(o.get('srcCurrency', '')).lower() == sym_lower 
-            and str(o.get('type')) == 'sell'
-        ]
+        sym_sell_orders = _match_sym_orders(ex_orders, sym, rv)
         
         if len(sym_sell_orders) >= 2:
             continue
@@ -1895,7 +1912,8 @@ def oco_health_check(sh, st, state=None):
             led.setdefault('pending_sells', set()).add(sym)
             log.info('G-oco-health: OCO rebuilt for %s', sym)
         else:
-            log.error('G-oco-health: Failed for %s: HTTP %s', sym, code2)
+            _err_msg = str(data2)[:200] if isinstance(data2, dict) else str(data2)[:200]
+            log.error('G-oco-health: Failed for %s: HTTP %s | %s', sym, code2, _err_msg)
 
 
 def backfill_oco(st, ws_t, client, led, prices):
