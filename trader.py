@@ -554,11 +554,49 @@ def sync_order_statuses(ws_t, led, client, st=None):
             if entry_b and exit_b and vol_c:
                 _stamp_pnl(ws_t, row_num, r[12], vol_c * (exit_b - entry_b) - sell_fee_n7 - buy_fee_n7, now_ref=jnow())
 
-        # OCO بومی صرافی — فقط در گذار خرید به «پر شد» (یک‌بار؛ در صورت شکست،
-        # حفاظت SL/TP با خود ربات ادامه می‌یابد)
+        # OCO بومی صرافی — در گذار خرید به «پر شد»
         if (st is not None and getattr(st, 'use_exchange_oco', False)
-                and r[2].strip() == 'خرید' and new_st == ST_FILLED
-                and sym_c not in led.get('pending_sells', set())):
+                and r[2].strip() == 'خرید' and new_st == ST_FILLED):
+            
+            _is_scale_in = sym_c in led.get('pending_sells', set())
+            
+            if _is_scale_in:
+                # G-scale VWAP: Scale-in detected! Cancel existing OCO and recalculate based on VWAP
+                log.info('G-scale: Scale-in detected for %s. Canceling existing OCO...', sym_c)
+                for _rn, _rr in led['rows']:
+                    if (_rr[1].strip().upper() == sym_c and 'OCO' in str(_rr[4]) 
+                            and _rr[11].strip() in OPENISH):
+                        _oids = [clean_oid(x) for x in str(_rr[10]).split('|')]
+                        _oids = [x for x in _oids if x and x != chr(8212)]
+                        for _oid in _oids:
+                            client.cancel_order(_oid)
+                        ws_t.update_cell(_rn, 12, 'لغو شده')
+                        break
+                led.get('pending_sells', set()).discard(sym_c)
+                
+                # Fetch VWAP from real trades
+                _vwap, _, _ = _entry_fill(client, led, sym_c)
+                if _vwap and _vwap > 0:
+                    _fill_px = _vwap
+                    _p_sig = parse_price(r[5])
+                    _sl_old, _tp_old = parse_price(r[8]), parse_price(r[9])
+                    _slm = getattr(st, 'sl_atr_mult', 0) or 0
+                    _tpm = getattr(st, 'tp_atr_mult', 0) or 0
+                    if (_p_sig and _sl_old and _tp_old and _slm > 0 and _tpm > 0 and _p_sig > _sl_old):
+                        _atr = (_p_sig - _sl_old) / _slm
+                        _sl_new = _fill_px - _slm * _atr
+                        _tp_new = _fill_px + _tpm * _atr
+                        if 0 < _sl_new < _fill_px < _tp_new:
+                            r[8] = fmt_price(_sl_new)
+                            r[9] = fmt_price(_tp_new)
+                            try:
+                                ws_t.update_cell(row_num, 9, r[8])
+                                ws_t.update_cell(row_num, 10, r[9])
+                                log.info('G-fillanchor VWAP %s: SL %s → %s | TP %s → %s (VWAP=%.6g)',
+                                         sym_c, fmt_price(_sl_old), r[8], fmt_price(_tp_old), r[9], _fill_px)
+                            except Exception:
+                                pass
+
             try:
                 vol_o = float(str(o.get('matchedAmount') or r[6]).replace(',', '') or 0)
             except (TypeError, ValueError):
