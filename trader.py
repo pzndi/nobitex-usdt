@@ -1784,7 +1784,7 @@ def backfill_oco(st, ws_t, client, led, prices):
 # GUARDS_DEFS: (name, log_pattern, active_condition)
 GUARDS_DEFS = [
     ('MAX_DAILY_TRADES',     'سقف معاملات روزانه',           True),
-    ('MAX_OPEN_POSITIONS',   'پوزیشن یا سفارش باز موجود',     True),
+    ('OPEN_POSITION_EXISTS', 'پوزیشن یا سفارش باز موجود',     True),
     ('SAME_CYCLE',           'خروج در همین چرخه',            True),
     ('ORDER_FAIL_COOLDOWN_MIN', 'سفارش ناموفق در',            'order_fail_cooldown_min'),
     ('REENTRY_COOLDOWN_MIN', 'خروج زیان‌ده در',              'reentry_cooldown_min'),
@@ -1808,7 +1808,7 @@ GUARDS_DEFS = [
 
 GUARDS_DUTY = {
     'MAX_DAILY_TRADES': 'جلوگیری از ثبت بیش از حداکثر تعداد معامله در یک روز',
-    'MAX_OPEN_POSITIONS': 'جلوگیری از ورود همزمان به نمادی که پوزیشن باز دارد',
+    'OPEN_POSITION_EXISTS': 'جلوگیری از ورود همزمان به نمادی که پوزیشن باز دارد',
     'SAME_CYCLE': 'جلوگیری از خرید مجدد نمادی که در همان چرخه بسته شده',
     'ORDER_FAIL_COOLDOWN_MIN': 'صبر بعد از سفارش ناموفق (UnexpectedMarketPrice و غیره)',
     'REENTRY_COOLDOWN_MIN': 'صبر بعد از خروج زیان‌ده برای جلوگیری از ورود مجدد سریع',
