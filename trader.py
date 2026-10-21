@@ -873,7 +873,9 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
             if vol2 > 0:
                 amount2 = round(_size2, 2)
                 reason2 = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 2/2 (BB/2xATR)" + _band_tag(st, row)
-                coid2 = None  # G-scale: let exchange auto-generate clientOrderId for 2nd order
+                # G-scale: تولید cid برای Scale 2/2 تا توسط cancel_stale_entries قابل لغو باشد
+                # الگو باید ^nbx-{sym}-{epoch9+}$ باشد تا cancel_stale_entries آن را بشناسد
+                coid2 = f"nbx-{sym.lower()}-{int(time.time())}"
                 code2, data2 = client.place_order('buy', sym, _price2, vol2, False, client_order_id=coid2)
                 ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
                 o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
