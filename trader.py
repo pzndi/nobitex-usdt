@@ -1828,22 +1828,83 @@ def recent_failed_buy(led, sym, minutes):
     return False
 
 
+# G-oco-health: نمادهای کوتاه ربات به نام‌های کامل صرافی نوبیتکس
+# اگر نماد در open_orders با نام کامل (Cardano) بیاید اما ربات نام کوتاه (ADA) را داشته باشد
+SYMBOL_ALIASES = {
+    'ADA': 'Cardano',
+    'S': 'Sonic',
+    'NEAR': 'NEARProtocol',
+    'DOGE': 'Dogecoin',
+    'XRP': 'Ripple',
+    'SOL': 'Solana',
+    'BTC': 'Bitcoin',
+    'ETH': 'Ethereum',
+    'WLD': 'Worldcoin',
+    'ZEC': 'Zcash',
+    'XAUT': 'TetherGold',
+    'PEPE': 'Pepe',
+    '1MPEPE': '1MPEPE',
+    'SHIB': 'ShibaInu',
+    'TRX': 'Tron',
+    'LTC': 'Litecoin',
+    'BNB': 'BNB',
+    'AVAX': 'Avalanche',
+    'MATIC': 'MaticNetwork',
+    'DOT': 'Polkadot',
+    'LINK': 'ChainLink',
+    'UNI': 'Uniswap',
+    'ATOM': 'Cosmos',
+    'FTM': 'Fantom',
+    'ALGO': 'Algorand',
+    'MANA': 'Decentraland',
+    'SAND': 'TheSandbox',
+    'AXS': 'AxieInfinity',
+    'CHZ': 'Chiliz',
+    'GALA': 'Gala',
+    'ENS': 'EthereumNameService',
+    'AAVE': 'Aave',
+    'MKR': 'Maker',
+    'COMP': 'Compound',
+    'SUSHI': 'SushiSwap',
+    'CRV': 'CurveDao',
+    '1INCH': 'OneInch',
+    'BAT': 'BasicAttentionToken',
+    'ZIL': 'Zilliqa',
+    'KNC': 'KyberNetwork',
+    'BUSD': 'BinanceUSD',
+    'USDC': 'USDCCoin',
+    'TUSD': 'TrueUSD',
+    'DAI': 'Dai',
+    'PAXG': 'PaxosGold',
+    'OCEAN': 'OceanProtocol',
+    'FET': 'FetchAI',
+    'GRT': 'TheGraph',
+    '1ART': 'OneArt',
+    'AVAX': 'Avalanche',
+}
+
+
 def _match_sym_orders(ex_orders, sym, sym_vol):
-    """G-oco-health: Match exchange sell orders by name (in-check) or amount."""
+    """G-oco-health: Match exchange sell orders by name (in-check) or amount.
+    Handles Nobitex full names (Cardano, Sonic, NEARProtocol) via SYMBOL_ALIASES."""
     sym_lower = sym.lower()
+    # پیدا کردن نام کامل صرافی از aliases
+    alias_full = SYMBOL_ALIASES.get(sym.upper(), sym).lower()
     matched = []
     for o in ex_orders:
         if str(o.get('type')) != 'sell':
             continue
         src = str(o.get('srcCurrency', '')).lower()
-        # Match by name: symbol in srcCurrency or vice versa
-        if sym_lower in src or src in sym_lower:
+        # Match by name: short or full alias
+        if (sym_lower in src or src in sym_lower
+                or alias_full in src or src in alias_full
+                or alias_full == src):
             matched.append(o)
             continue
-        # Fallback: match by amount (within 1% tolerance)
+        # Fallback: match by amount (within 3% tolerance - covers exchange fees)
         try:
             amt = float(o.get('amount', 0) or 0)
-            if sym_vol > 0 and abs(amt - sym_vol) / sym_vol < 0.01:
+            if sym_vol > 0 and abs(amt - sym_vol) / sym_vol < 0.03:
                 matched.append(o)
         except (TypeError, ValueError):
             pass
