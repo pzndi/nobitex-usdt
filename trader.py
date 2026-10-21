@@ -861,7 +861,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
             if vol2 > 0:
                 amount2 = round(_size2, 2)
                 reason2 = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 2/2 (BB/2xATR)" + _band_tag(st, row)
-                coid2 = (coid + '_s2') if coid else None
+                coid2 = None  # G-scale: let exchange auto-generate clientOrderId for 2nd order
                 code2, data2 = client.place_order('buy', sym, _price2, vol2, False, client_order_id=coid2)
                 ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
                 o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
