@@ -868,6 +868,13 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
         p['volume'] += vol
         p['real_volume'] = p.get('real_volume', 0.0) + vol
         # G-scale: Place second order at deep pullback level
+        # G-budget: بررسی موجودی واقعی USDT قبل از Scale 2/2
+        if _price2 and _size2 > 0 and not _is_market:
+            _usdt_avail = currency_available(client, 'usdt') or 0.0
+            if _usdt_avail < _size2:
+                log.info('G-budget: %s فقط Scale 1/2 ثبت شد (موجودی USDT=%.2f، لازم=%.2f)',
+                         sym, _usdt_avail, _size2)
+                _price2 = None  # Scale 2/2 را رد کن
         if _price2 and _size2 > 0 and not _is_market:
             vol2 = math.floor((_size2 / _price2) * 1e8) / 1e8
             if vol2 > 0:
@@ -2632,7 +2639,9 @@ def run(sh, st, rows, state=None):
             if bal is None:
                 log.error('خرید %s انجام نشد: موجودی USDT از API قابل دریافت نیست', sym)
                 continue
-        if bal < st.order_size_usdt or bal - st.order_size_usdt < st.min_usdt_balance:
+        # G-scale: بررسی فقط Scale 1/2 (نصف کل) به‌جای کل مبلغ
+        _half_size = st.order_size_usdt * 0.5
+        if bal < _half_size or bal - _half_size < st.min_usdt_balance:
             log.info('خرید %s انجام نشد: موجودی USDT کافی نیست (%.1f)', sym, bal)
             continue
         buy_one(st, ws_t, client, dry, sym, a, p, led, coid=f'nbx-{sym.lower().replace("_", "")}-{int(time.time())}')
