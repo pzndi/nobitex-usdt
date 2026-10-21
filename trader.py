@@ -2559,7 +2559,7 @@ def run(sh, st, rows, state=None):
         if bal < st.order_size_usdt or bal - st.order_size_usdt < st.min_usdt_balance:
             log.info('خرید %s انجام نشد: موجودی USDT کافی نیست (%.1f)', sym, bal)
             continue
-        buy_one(st, ws_t, client, dry, sym, a, p, led, coid=f'nbx-{sym.lower()}-{int(time.time())}')
+        buy_one(st, ws_t, client, dry, sym, a, p, led, coid=f'nbx-{sym.lower().replace("_", "")}-{int(time.time())}')
         led['daily_count'] += 1
         open_pos += 1
     log.info('پایان ماژول معاملات — مجموع سفارش‌های امروز: %d', led['daily_count'])
