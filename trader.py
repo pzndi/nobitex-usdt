@@ -2497,10 +2497,11 @@ def run(sh, st, rows, state=None):
             continue
         # گزینهٔ ب (G-bandcap): سقف عرض استاپ — رد دُم پرنوسان (STRK 8.8٪،
         # WAL 11.1٪ → رد؛ BAT 6.3٪ → عبور با سایزِ کاهش‌یافته از گزینهٔ الف)
+        _max_band = getattr(st, 'max_sl_band_pct', MAX_SL_BAND_PCT)
         _w_pct = _sl_width_pct(row, st)
-        if _w_pct is not None and _w_pct > MAX_SL_BAND_PCT:
+        if _w_pct is not None and _w_pct > _max_band:
             log.info('skip buy %s: SL band %.1f%% > %.1f%% (high-volatility tail)',
-                     sym, _w_pct, MAX_SL_BAND_PCT)
+                     sym, _w_pct, _max_band)
             continue
         # G-global: فقط نمادهایی که داده جهانی دارند (mark > 0)
         _mark_px = _public_mark(sym)

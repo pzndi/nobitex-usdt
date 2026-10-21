@@ -17,7 +17,7 @@ TRADING_KEYS = {'TRADING_ENABLED', 'DRY_RUN', 'MAX_DAILY_TRADES', 'ORDER_TYPE',
                 'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN', 'PUMP_GUARD_PCT', 'LOSS_STREAK_LIMIT', 'LOSS_STREAK_WINDOW_H', 'USE_BT_PARAMS', 'BLOCKED_SYMBOLS', 'FREE_SYMBOLS', 'MAX_SL_MULT', 'TREND_FILTER_ENABLED', 'TRAIL_ATR_MULT', 'PARTIAL_EXIT_PCT', 'PARTIAL_EXIT_TRIGGER', 'ENTRY_MODE', 'PULLBACK_PCT', 'POSITION_TIMEOUT_H', 'POSITION_TIMEOUT_MIN_PCT'}
 GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK',
                    'INTERVAL_UNIVERSE_MIN', 'INTERVAL_SIGNALS_MIN', 'INTERVAL_BACKTEST_MIN',
-                   'INTERVAL_WALLET_MIN', 'INTERVAL_GUARDS_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME'}
+                   'INTERVAL_WALLET_MIN', 'INTERVAL_GUARDS_MIN', 'INTERVAL_OCO_HEALTH_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME'}
 
 RES_FALLBACK = {'1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '3h': '180',
                 '4h': '240', '6h': '360', '12h': '720', '1D': '1D', '2D': '2D', '3D': '3D'}
@@ -39,12 +39,13 @@ DEFAULT_TRADING = {'TRADING_ENABLED': 'خیر', 'DRY_RUN': 'بله', 'MAX_DAILY_
                    'ORDER_TYPE': 'market', 'ORDER_SIZE_USDT': '50',
                    'MAX_OPEN_POSITIONS': '3', 'MIN_USDT_BALANCE': '20',
                    'DRY_START_USDT': '1000', 'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0', 'USE_EXCHANGE_OCO': 'خیر',
-                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله', 'BLOCKED_SYMBOLS': '', 'FREE_SYMBOLS': '', 'MAX_SL_MULT': '1.5', 'TREND_FILTER_ENABLED': 'بله', 'TRAIL_ATR_MULT': '0.5', 'PARTIAL_EXIT_PCT': '50', 'PARTIAL_EXIT_TRIGGER': '2.0', 'ENTRY_MODE': 'limit_pullback', 'PULLBACK_PCT': '1.0', 'POSITION_TIMEOUT_H': '48', 'POSITION_TIMEOUT_MIN_PCT': '0'}
+                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله', 'BLOCKED_SYMBOLS': '', 'FREE_SYMBOLS': '', 'MAX_SL_MULT': '1.5', 'TREND_FILTER_ENABLED': 'بله', 'TRAIL_ATR_MULT': '0.5', 'PARTIAL_EXIT_PCT': '50', 'PARTIAL_EXIT_TRIGGER': '2.0', 'ENTRY_MODE': 'limit_pullback', 'PULLBACK_PCT': '1.0', 'POSITION_TIMEOUT_H': '48', 'POSITION_TIMEOUT_MIN_PCT': '0', 'MAX_SL_BAND_PCT': '8.0'}
 DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
                    'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300',
                    'INTERVAL_UNIVERSE_MIN': '120', 'INTERVAL_SIGNALS_MIN': '5',
                    'INTERVAL_BACKTEST_MIN': '30', 'INTERVAL_WALLET_MIN': '30',
                   'INTERVAL_GUARDS_MIN': '5',
+                  'INTERVAL_OCO_HEALTH_MIN': '10',
                    'BACKTEST_TIMEFRAME': '1D', 'SLTP_TIMEFRAME': '1h'}
 
 
@@ -118,11 +119,13 @@ PARAM_RANGES = {
     'REENTRY_COOLDOWN_MIN': (0, 1440),
     'DUST_USDT':            (0.01, 10.0),
     'PUMP_GUARD_PCT':       (0.0, 50.0),
+    'MAX_SL_BAND_PCT':      (2.0, 20.0),
     'INTERVAL_UNIVERSE_MIN':   (5, 1440),
     'INTERVAL_SIGNALS_MIN':    (1, 1440),
     'INTERVAL_BACKTEST_MIN':   (5, 1440),
     'INTERVAL_WALLET_MIN':     (1, 1440),
     'INTERVAL_GUARDS_MIN':     (1, 1440),
+    'INTERVAL_OCO_HEALTH_MIN': (5, 1440),
 }
 
 
@@ -255,6 +258,11 @@ class Settings:
         this caps it (e.g. 1.5) to limit worst-case loss per trade.
         0 = no cap (backtest wins)."""
         return max(0.0, self._tnum('MAX_SL_MULT', 1.5))
+
+    @property
+    def max_sl_band_pct(self):
+        """G-bandcap: max SL band width (%). Reject entries with wider SL."""
+        return max(2.0, self._tnum('MAX_SL_BAND_PCT', 8.0))
 
     @property
     def trend_filter_enabled(self):
@@ -390,6 +398,10 @@ class Settings:
     @property
     def interval_guards_min(self):
         return self._interval('INTERVAL_GUARDS_MIN', 5)
+
+    @property
+    def interval_oco_health_min(self):
+        return self._interval('INTERVAL_OCO_HEALTH_MIN', 10)
 
     @property
     def sltp_timeframe(self):
