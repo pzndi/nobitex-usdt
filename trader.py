@@ -767,50 +767,47 @@ def _bb_lower_band(closes, period=20, std=2.0):
 
 
 def _calc_scaled_entries(sym, price, row, st):
-    """G-scale: Calculate 2 shallow entry prices for scaling in.
-    Uses Fib 0.382 and BB 1.5sigma for higher fill rate."""
+    """G-scale v2: نوسان-محور - محاسبه ۲ قیمت ورود بر اساس نوسان ۴ ساعت اخیر
+    - نوسان = (max(highs[-4:]) - min(lows[-4:])) / price × 100
+    - مپینگ نوسان به pullback در محدوده [0.1%, 1.5%]:
+      vol ≤ 0.5% → pullback = 0.1% (کم‌نوسان = ورود نزدیک)
+      vol ≥ 5.0% → pullback = 1.5% (پرنوسان = ورود دورتر)
+      بین این دو → خطی
+    - Scale 1/2 = price * (1 - pullback/100)
+    - Scale 2/2 = Scale 1/2 * 0.999 (همیشه 0.1% پایین‌تر از Scale 1/2)
+    """
     try:
-        c = fetch_candles(sym + 'USDT', '60', 100)
-        if not c or len(c.get('c', [])) < 25:
+        c = fetch_candles(sym + 'USDT', '60', 10)
+        if not c or len(c.get('c', [])) < 5:
             return None, None
-        closes, highs, lows = c['c'], c['h'], c['l']
+        highs, lows = c['h'], c['l']
 
-        # Level 1: Fibonacci 0.146 retracement (extreme shallow - max aggressive)
-        lookback = min(50, len(closes))
-        swing_high = max(highs[-lookback:])
-        swing_low = min(lows[-lookback:])
-        fib_146 = swing_high - (swing_high - swing_low) * 0.146
+        # محاسبه نوسان در ۴ ساعت اخیر (۴ کندل ۱ ساعته)
+        lookback = min(4, len(highs))
+        max_high_4h = max(highs[-lookback:])
+        min_low_4h = min(lows[-lookback:])
+        volatility_pct = (max_high_4h - min_low_4h) / price * 100
 
-        # Level 2: Bollinger lower band (0.7 sigma) or 0.3xATR (extreme shallow)
-        bb_lo = _bb_lower_band(closes, 20, 0.7)
-        if bb_lo is None or bb_lo <= 0:
-            _atr_series = se_prepare_atr(c)
-            _atr_val = _atr_series[-1] if _atr_series and _atr_series[-1] else None
-            if _atr_val and _atr_val > 0:
-                bb_lo = price - 0.3 * _atr_val  # extreme shallow fallback
+        # مپینگ نوسان به pullback در محدوده [0.1%, 1.5%]
+        MIN_VOL = 0.5   # نوسان کم → حداقل پولبک
+        MAX_VOL = 5.0   # نوسان زیاد → حداکثر پولبک
+        MIN_PB = 0.1    # حداقل پولبک (٪)
+        MAX_PB = 1.5    # حداکثر پولبک (٪)
+        if volatility_pct <= MIN_VOL:
+            pullback_pct = MIN_PB
+        elif volatility_pct >= MAX_VOL:
+            pullback_pct = MAX_PB
+        else:
+            ratio = (volatility_pct - MIN_VOL) / (MAX_VOL - MIN_VOL)
+            pullback_pct = MIN_PB + ratio * (MAX_PB - MIN_PB)
 
-        # Validate and fallback (0.2% and 0.5% pullback)
-        _pull = _eff_pullback_pct(row, st) / 100.0
-        price_fib = fib_146 if (fib_146 and 0 < fib_146 < price) else price * (1 - 0.002)
-        price_deep = bb_lo if (bb_lo and 0 < bb_lo < price) else price * (1 - 0.005)
+        # Scale 1/2: قیمت ورود اول
+        price_1 = price * (1 - pullback_pct / 100.0)
 
-        # Hard caps - maximum aggressiveness
-        # Scale 1/2: max 1.5% from price (otherwise too aggressive)
-        # Scale 2/2: max 3.0% from price (otherwise too aggressive)
-        MAX_SCALE1_PCT = 0.015
-        MAX_SCALE2_PCT = 0.030
-        min_scale1 = price * (1 - MAX_SCALE1_PCT)
-        min_scale2 = price * (1 - MAX_SCALE2_PCT)
-        if price_fib < min_scale1:
-            price_fib = min_scale1
-        if price_deep < min_scale2:
-            price_deep = min_scale2
+        # Scale 2/2: همیشه 0.5% پایین‌تر از Scale 1/2
+        price_2 = price_1 * 0.995
 
-        # Ensure deep is below fib
-        if price_deep >= price_fib:
-            price_deep = price_fib * 0.99
-
-        return price_fib, price_deep
+        return price_1, price_2
     except Exception:
         return None, None
 
