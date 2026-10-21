@@ -767,36 +767,36 @@ def _bb_lower_band(closes, period=20, std=2.0):
 
 
 def _calc_scaled_entries(sym, price, row, st):
-    """G-scale: Calculate 2 entry prices for scaling in.
-    Returns (price_fib, price_deep) or (None, None) if data unavailable."""
+    """G-scale: Calculate 2 shallow entry prices for scaling in.
+    Uses Fib 0.382 and BB 1.5sigma for higher fill rate."""
     try:
         c = fetch_candles(sym + 'USDT', '60', 100)
         if not c or len(c.get('c', [])) < 25:
             return None, None
         closes, highs, lows = c['c'], c['h'], c['l']
 
-        # Level 1: Fibonacci 0.618 retracement
+        # Level 1: Fibonacci 0.382 retracement (shallow)
         lookback = min(50, len(closes))
         swing_high = max(highs[-lookback:])
         swing_low = min(lows[-lookback:])
-        fib_618 = swing_high - (swing_high - swing_low) * 0.618
+        fib_382 = swing_high - (swing_high - swing_low) * 0.382
 
-        # Level 2: Bollinger lower band or 2xATR
-        bb_lo = _bb_lower_band(closes, 20, 2.0)
+        # Level 2: Bollinger lower band (1.5 sigma) or 1xATR (shallow)
+        bb_lo = _bb_lower_band(closes, 20, 1.5)
         if bb_lo is None or bb_lo <= 0:
             _atr_series = se_prepare_atr(c)
             _atr_val = _atr_series[-1] if _atr_series and _atr_series[-1] else None
             if _atr_val and _atr_val > 0:
-                bb_lo = price - 2 * _atr_val
+                bb_lo = price - 1.0 * _atr_val  # shallow fallback
 
-        # Validate and fallback
+        # Validate and fallback (half and full pullback)
         _pull = _eff_pullback_pct(row, st) / 100.0
-        price_fib = fib_618 if (fib_618 and 0 < fib_618 < price) else price * (1 - _pull)
-        price_deep = bb_lo if (bb_lo and 0 < bb_lo < price) else price * (1 - _pull * 2)
+        price_fib = fib_382 if (fib_382 and 0 < fib_382 < price) else price * (1 - _pull * 0.5)
+        price_deep = bb_lo if (bb_lo and 0 < bb_lo < price) else price * (1 - _pull)
 
         # Ensure deep is below fib
         if price_deep >= price_fib:
-            price_deep = price_fib * 0.98
+            price_deep = price_fib * 0.99
 
         return price_fib, price_deep
     except Exception:
