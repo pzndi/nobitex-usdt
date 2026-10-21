@@ -775,24 +775,36 @@ def _calc_scaled_entries(sym, price, row, st):
             return None, None
         closes, highs, lows = c['c'], c['h'], c['l']
 
-        # Level 1: Fibonacci 0.236 retracement (very shallow - aggressive)
+        # Level 1: Fibonacci 0.146 retracement (extreme shallow - max aggressive)
         lookback = min(50, len(closes))
         swing_high = max(highs[-lookback:])
         swing_low = min(lows[-lookback:])
-        fib_236 = swing_high - (swing_high - swing_low) * 0.236
+        fib_146 = swing_high - (swing_high - swing_low) * 0.146
 
-        # Level 2: Bollinger lower band (1.0 sigma) or 0.5xATR (very shallow)
-        bb_lo = _bb_lower_band(closes, 20, 1.0)
+        # Level 2: Bollinger lower band (0.7 sigma) or 0.3xATR (extreme shallow)
+        bb_lo = _bb_lower_band(closes, 20, 0.7)
         if bb_lo is None or bb_lo <= 0:
             _atr_series = se_prepare_atr(c)
             _atr_val = _atr_series[-1] if _atr_series and _atr_series[-1] else None
             if _atr_val and _atr_val > 0:
-                bb_lo = price - 0.5 * _atr_val  # very shallow fallback
+                bb_lo = price - 0.3 * _atr_val  # extreme shallow fallback
 
         # Validate and fallback (0.2% and 0.5% pullback)
         _pull = _eff_pullback_pct(row, st) / 100.0
-        price_fib = fib_236 if (fib_236 and 0 < fib_236 < price) else price * (1 - 0.002)
+        price_fib = fib_146 if (fib_146 and 0 < fib_146 < price) else price * (1 - 0.002)
         price_deep = bb_lo if (bb_lo and 0 < bb_lo < price) else price * (1 - 0.005)
+
+        # Hard caps - maximum aggressiveness
+        # Scale 1/2: max 1.5% from price (otherwise too aggressive)
+        # Scale 2/2: max 3.0% from price (otherwise too aggressive)
+        MAX_SCALE1_PCT = 0.015
+        MAX_SCALE2_PCT = 0.030
+        min_scale1 = price * (1 - MAX_SCALE1_PCT)
+        min_scale2 = price * (1 - MAX_SCALE2_PCT)
+        if price_fib < min_scale1:
+            price_fib = min_scale1
+        if price_deep < min_scale2:
+            price_deep = min_scale2
 
         # Ensure deep is below fib
         if price_deep >= price_fib:
