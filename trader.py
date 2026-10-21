@@ -1616,7 +1616,9 @@ def cancel_stale_entries(st, ws_t, client, led):
             continue
         # G-cancel: apiv2 برای سفارش‌های دارای clientOrderId فیلد pairId در
         # orders/list نمی‌فرستد → شناسه عددی از ردیف خرید باز همان نماد در دفتر
-        # (ثبت‌شده هنگام ثبت سفارش از پاسخ orders/add). آخرین ردیف منطبق برنده است.
+        # (ثبت‌شده هنگام ثبت سفارش از پاسخ orders/add).
+        # G-fix: وقتی چندین سفارش باز برای یک نماد وجود دارد (Scale 1/2 + Scale 2/2)،
+        # باید oid را بر اساس cid مرتبط پیدا کنیم، نه آخرین ردیف.
         oid = clean_oid(o.get('pairId'))
         if not oid:
             for _rn, _rr in led.get('rows') or []:
@@ -1624,11 +1626,20 @@ def cancel_stale_entries(st, ws_t, client, led):
                         and str(_rr[2]).strip() == 'خرید'
                         and str(_rr[11]).strip() in OPENISH):
                     _c = clean_oid(_rr[10])
-                    if _c.isdigit():
-                        oid = _c
+                    if _c and _c.isdigit():
+                        # استعلام وضعیت این oid - آیا cid آن با سفارش فعلی مطابقت دارد؟
+                        try:
+                            _cs, _ds = client.order_status(_c)
+                            _ord_c = _ds.get('order', _ds) if isinstance(_ds, dict) else {}
+                            _cid_c = str(_ord_c.get('clientOrderId') or '')
+                            if _cid_c == cid:
+                                oid = _c  # ← oid درست پیدا شد
+                                break
+                        except Exception:
+                            continue
         if not oid:
             log.warning('لغو سفارش کهنه %s ناموفق: شناسه عددی سفارش یافت نشد '
-                        '(pairId غایب و ردیف دفتر بدون oid)', sym)
+                        '(pairId غایب و ردیف دفتر بدون oid با cid منطبق)', sym)
             continue
         # تأیید هویت: شناسه دفتر باید به همین سفارش (cid) تعلق داشته و فعال باشد
         try:
