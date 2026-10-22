@@ -909,8 +909,8 @@ def _btc_trend_bearish():
     One API call, cached by caller if needed."""
     try:
         c = fetch_candles('BTCUSDT', '240', 100)
-        if not c or len(c.get('c') or ()):
-            return False
+        if not c or not c.get('c') or len(c['c']) < 50:
+            return False  # داده ناکافی - fail-open
         closes = c['c']
         fa = sma(closes, 20)
         sl2 = sma(closes, 50)
