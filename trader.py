@@ -520,8 +520,9 @@ def aggregate_signals(rows):
     return agg
 
 
-def is_buy_candidate(a):
-    return (a['buys'] >= MIN_TFS and a['buys'] >= (a['total'] + 1) // 2
+def is_buy_candidate(a, st=None):
+    _min_tfs = st.min_tfs if st is not None else MIN_TFS
+    return (a['buys'] >= _min_tfs and a['buys'] >= (a['total'] + 1) // 2
             and a['buys'] > a['sells'])
 
 
@@ -2676,12 +2677,12 @@ def _sl_buffer_skip(a, st):
     return (buf < 0.5), buf, fill
 
 
-def _rank_candidates(agg):
+def _rank_candidates(agg, st=None):
     # بهبود ۴ (G-rank): اولویت خرید = کیفیت سیگنال — اکثریت TF (نزولی)، سپس
     # قوت بهترین TF (نزولی)؛ برابرها → ترتیب universe/نقدشوندگی (sort پایدار).
     # تا پیش از این ترتیب خرید = ترتیب universe بود و «رتبه‌بندی برای سفارشگزاری»
     # صرفاً نمایشی بود (ممیزی ۱۴۰۵/۰۷/۲۲ — cands بدون هیچ sort).
-    cands = [s for s, a in agg.items() if is_buy_candidate(a)]
+    cands = [s for s, a in agg.items() if is_buy_candidate(a, st)]
     cands.sort(key=lambda s: (-agg[s]['buys'],
                               -(agg[s]['best'][0] if agg[s]['best'] else 0)))
     return cands
@@ -2755,7 +2756,7 @@ def run(sh, st, rows, state=None):
             and 'OCO' not in str(rr[4])))
     log.info('معاملات امروز ربات: %d (اجراشده از API: %s)', led['daily_count'], api_count)
 
-    cands = _rank_candidates(agg)
+    cands = _rank_candidates(agg, st)
     log.info('کاندیدهای خرید این اجرا: %s', '، '.join(cands) if cands else 'هیچ')
 
     # ۱) فروش پوزیشن‌هایی که سیگنال فروش اکثریت گرفته‌اند

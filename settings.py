@@ -39,7 +39,7 @@ DEFAULT_TRADING = {'TRADING_ENABLED': 'خیر', 'DRY_RUN': 'بله', 'MAX_DAILY_
                    'ORDER_TYPE': 'market', 'ORDER_SIZE_USDT': '50',
                    'MAX_OPEN_POSITIONS': '3', 'MIN_USDT_BALANCE': '20',
                    'DRY_START_USDT': '1000', 'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0', 'USE_EXCHANGE_OCO': 'خیر',
-                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله', 'BLOCKED_SYMBOLS': '', 'FREE_SYMBOLS': '', 'MAX_SL_MULT': '1.5', 'TREND_FILTER_ENABLED': 'بله', 'TRAIL_ATR_MULT': '0.5', 'PARTIAL_EXIT_PCT': '50', 'PARTIAL_EXIT_TRIGGER': '2.0', 'ENTRY_MODE': 'limit_pullback', 'PULLBACK_PCT': '1.0', 'POSITION_TIMEOUT_H': '48', 'POSITION_TIMEOUT_MIN_PCT': '0', 'MAX_SL_BAND_PCT': '8.0'}
+                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله', 'BLOCKED_SYMBOLS': '', 'FREE_SYMBOLS': '', 'MAX_SL_MULT': '1.5', 'TREND_FILTER_ENABLED': 'بله', 'TRAIL_ATR_MULT': '0.5', 'PARTIAL_EXIT_PCT': '50', 'PARTIAL_EXIT_TRIGGER': '2.0', 'ENTRY_MODE': 'limit_pullback', 'PULLBACK_PCT': '1.0', 'POSITION_TIMEOUT_H': '48', 'POSITION_TIMEOUT_MIN_PCT': '0', 'MAX_SL_BAND_PCT': '8.0', 'MIN_TFS': '3'}
 DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
                    'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300',
                    'INTERVAL_UNIVERSE_MIN': '120', 'INTERVAL_SIGNALS_MIN': '5',
@@ -120,6 +120,7 @@ PARAM_RANGES = {
     'DUST_USDT':            (0.01, 10.0),
     'PUMP_GUARD_PCT':       (0.0, 50.0),
     'MAX_SL_BAND_PCT':      (2.0, 20.0),
+    'MIN_TFS':              (1.0, 8.0),
     'INTERVAL_UNIVERSE_MIN':   (5, 1440),
     'INTERVAL_SIGNALS_MIN':    (1, 1440),
     'INTERVAL_BACKTEST_MIN':   (5, 1440),
@@ -263,6 +264,11 @@ class Settings:
     def max_sl_band_pct(self):
         """G-bandcap: max SL band width (%). Reject entries with wider SL."""
         return max(2.0, self._tnum('MAX_SL_BAND_PCT', 8.0))
+
+    @property
+    def min_tfs(self):
+        """حداقل تعداد تایم‌فریم هم‌جهت برای صدور سیگنال (قابل تنظیم از شیت)"""
+        return max(1, int(self._tnum('MIN_TFS', 3)))
 
     @property
     def trend_filter_enabled(self):
