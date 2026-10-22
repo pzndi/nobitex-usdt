@@ -790,6 +790,11 @@ def sync_order_statuses(ws_t, led, client, st=None):
                 _vwap, _ = _entry_fill(client, led, sym_c)
                 if _vwap and _vwap > 0:
                     _fill_px = _vwap
+                    # G-fix: اگر VWAP بالاتر از قیمت بازار است، از قیمت بازار استفاده کن
+                    # این از خطای PriceConditionFailed و اجرای سریع SL جلوگیری می‌کند
+                    _current_px = prices.get(sym_c)
+                    if _current_px and _current_px < _fill_px:
+                        _fill_px = _current_px
                     _p_sig = parse_price(r[5])
                     _sl_old, _tp_old = parse_price(r[8]), parse_price(r[9])
                     _slm = getattr(st, 'sl_atr_mult', 0) or 0
