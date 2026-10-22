@@ -575,7 +575,7 @@ def sync_order_statuses(ws_t, led, client, st=None):
                 led.get('pending_sells', set()).discard(sym_c)
                 
                 # Fetch VWAP from real trades
-                _vwap, _, _ = _entry_fill(client, led, sym_c)
+                _vwap, _ = _entry_fill(client, led, sym_c)
                 if _vwap and _vwap > 0:
                     _fill_px = _vwap
                     _p_sig = parse_price(r[5])
