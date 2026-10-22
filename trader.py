@@ -798,6 +798,13 @@ def sync_order_statuses(ws_t, led, client, st=None):
                         _atr = (_p_sig - _sl_old) / _slm
                         _sl_new = _fill_px - _slm * _atr
                         _tp_new = _fill_px + _tpm * _atr
+                        # G-cap: حداکثر سود خالص 0.8% (TP≤1.08% ناخالص، SL≤0.54% ناخالص)
+                        _tp_max = _fill_px * (1 + 1.08 / 100.0)
+                        _sl_min = _fill_px * (1 - 0.54 / 100.0)
+                        if _tp_new > _tp_max:
+                            _tp_new = _tp_max
+                        if _sl_new < _sl_min:
+                            _sl_new = _sl_min
                         if 0 < _sl_new < _fill_px < _tp_new:
                             r[8] = fmt_price(_sl_new)
                             r[9] = fmt_price(_tp_new)
