@@ -701,9 +701,10 @@ def sync_order_statuses(ws_t, led, client, st=None):
                     _atr = (_p_sig - _sl_old) / _slm
                     _sl_new = _fill_px - _slm * _atr
                     _tp_new = _fill_px + _tpm * _atr
-                    # G-cap: حداکثر سود خالص 0.8% (TP≤1.08% ناخالص، SL≤0.54% ناخالص)
-                    _tp_max = _fill_px * (1 + 1.08 / 100.0)
-                    _sl_min = _fill_px * (1 - 0.54 / 100.0)
+                    # G-cap: حداکثر سود خالص 0.8% (TP≤0.98% ناخالص، SL≤0.49% ناخالص)
+                    # کارمزد واقعی نوبیتکس 0.18% (0.09% خرید + 0.09% فروش)
+                    _tp_max = _fill_px * (1 + 0.98 / 100.0)
+                    _sl_min = _fill_px * (1 - 0.49 / 100.0)
                     if _tp_new > _tp_max:
                         _tp_new = _tp_max
                     if _sl_new < _sl_min:
@@ -1937,6 +1938,16 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
                 ws_t.update_cell(marked_row[0], 7, sold)
                 _sell_fee_n7 = _xf[2]
         _entry_n7, _buy_fee_n7 = _entry_fill(client, led, sym)
+        # G-fix: جمع‌آوری oids فروش برای دریافت قیمت واقعی خروج
+        _reconcile_oids = []
+        for _, _rr in reversed(led.get('rows') or []):
+            if (str(_rr[1]).strip().upper() == sym
+                    and str(_rr[2]).strip() == 'فروش'
+                    and str(_rr[11]).strip() in OPENISH):
+                for _x in str(_rr[10]).split('|'):
+                    _c = clean_oid(_x)
+                    if _c and _c.isdigit():
+                        _reconcile_oids.append(_c)
         entry_b = _entry_n7 or p.get('entry_price') or price
         pnl_b = (sold * (price - entry_b) - _sell_fee_n7 - _buy_fee_n7) if (price and entry_b) else None
         if marked_row is not None:
@@ -1954,8 +1965,12 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
         e_time = next((rr[0] for _, rr in reversed(led['rows'])
                        if rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
                        and rr[11].strip() in EXECUTED), '—')
-        record_closed(ws_t, sym, e_time, _entry_n7 or p.get('entry_price') or price, price,
-                      sold, 'خروج از کیف پول (OCO یا فروش دستی)', 'واقعی', fee_usdt=_sell_fee_n7 + _buy_fee_n7)
+        # G-fix: استفاده از قیمت واقعی فروش (exit VWAP) به‌جای قیمت لحظه‌ای
+        _xf_re = _exit_fill(client, _reconcile_oids) if _reconcile_oids else None
+        _real_exit = ((_xf_re[0] if _xf_re and _xf_re[0] else None) or price)
+        _real_sell_fee = (_xf_re[2] if _xf_re else _sell_fee_n7)
+        record_closed(ws_t, sym, e_time, _entry_n7 or p.get('entry_price') or price, _real_exit,
+                      sold, 'خروج از کیف پول (OCO یا فروش دستی)', 'واقعی', fee_usdt=_real_sell_fee + _buy_fee_n7)
         # G-analysis: ثبت تحلیل معامله در تب «تحلیل معاملات»
         try:
             _entry_an = _entry_n7 or p.get('entry_price') or price
