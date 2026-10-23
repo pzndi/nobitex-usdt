@@ -151,6 +151,8 @@ def main():
         ('backtest', st.interval_backtest_min, lambda: run_backtest(sh, st, state)),
         ('signals', st.interval_signals_min, lambda: run_signals(sh, st, state)),
         ('wallet', st.interval_wallet_min, lambda: run_wallet(sh, st, state)),
+        ('guards', st.interval_guards_min, lambda: trader.write_guards_status(sh, st, state)),
+        ('oco_health', st.interval_oco_health_min, lambda: trader.oco_health_check(sh, st, state)),
     ]
     ran = []
     for name, interval, fn in tasks:
@@ -168,7 +170,8 @@ def main():
     else:
         log.info('تیک: چیزی سررسید نبود (universe=%d | backtest=%d | signals=%d | wallet=%d دقیقه)',
                  st.interval_universe_min, st.interval_backtest_min,
-                 st.interval_signals_min, st.interval_wallet_min)
+                 st.interval_signals_min, st.interval_wallet_min,
+                 st.interval_guards_min)
     return 0
 
 
