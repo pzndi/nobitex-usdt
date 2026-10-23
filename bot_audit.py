@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import net_timeout  # F3: ضد هنگ gspread (پچ 1405/08/01)
 """bot_audit.py — ممیزی جامع عملکرد ربات نوبیتکس (اصلاح شده)"""
 import os, sys, re, gspread
 from datetime import datetime

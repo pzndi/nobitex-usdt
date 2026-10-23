@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import net_timeout  # F3: ضد هنگ gspread (پچ 1405/08/01)
 """scale_24h_report.py - گزارش ۲۴ ساعته عملکرد G-scale و سلامت سیستم
 داده‌ها مستقیماً از Google Sheets ledger خوانده می‌شود (دقیق‌تر از لاگ).
 """
