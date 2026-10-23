@@ -1478,25 +1478,32 @@ def _exit_fill(client, oids):
 
 
 def _entry_fill(client, led, sym):
-    """N7: (price, fee_usdt_equiv) of the LAST executed buy of sym from real
+    """N7: (vwap, fee_usdt_equiv) of ALL executed buys of sym from real
     fills; fallback to ledger row price with zero fee. Buy fee is charged in
-    the coin itself -> converted at fill price."""
-    oid = None
-    px = None
+    the coin itself -> converted at fill price.
+    G-fix: محاسبه VWAP وزنی همه خریدها (Scale 1/2 + Scale 2/2)، نه فقط آخرین."""
+    all_oids = []
+    last_px = None
     for _, rr in (led.get('rows') or []):
         if (rr[1].strip().upper() == sym and rr[2].strip() == 'خرید'
                 and rr[11].strip() in EXECUTED):
             v = parse_price(rr[5])
             if v:
-                px = v
+                last_px = v
             fo = clean_oid(str(rr[10]).split('|')[0])
             if fo and fo != '—':
-                oid = fo
-    if oid and client is not None:
-        f = _fills_for_orders(client, [oid]).get(oid)
-        if f:
-            return f['vwap'], f['fee'] * f['vwap']
-    return px, 0.0
+                all_oids.append(fo)
+    if all_oids and client is not None:
+        fills = _fills_for_orders(client, all_oids)
+        if fills:
+            total_cost = sum(f['vwap'] * f['amount'] for f in fills.values())
+            total_amount = sum(f['amount'] for f in fills.values())
+            total_fee_coin = sum(f['fee'] for f in fills.values())
+            if total_amount > 0:
+                vwap = total_cost / total_amount
+                fee_usdt = total_fee_coin * vwap
+                return vwap, fee_usdt
+    return last_px, 0.0
 
 
 def apply_trailing(st, ws_t, led, prices, client=None):
