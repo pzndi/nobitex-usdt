@@ -705,10 +705,11 @@ def sync_order_statuses(ws_t, led, client, st=None):
                     _atr = (_p_sig - _sl_old) / _slm
                     _sl_new = _fill_px - _slm * _atr
                     _tp_new = _fill_px + _tpm * _atr
-                    # G-cap: حداکثر سود خالص 0.8% (TP≤0.98% ناخالص، SL≤0.49% ناخالص)
+                    # G-cap2 (اپراتور 1405/08/01): TP≤0.80% ناخالص، SL≤1.00% ناخالص
+                    # هدف: افزایش نرخ برد — TP نزدیک‌تر (پرشدن بیشتر)، SL بیرون نویز
                     # کارمزد واقعی نوبیتکس 0.18% (0.09% خرید + 0.09% فروش)
-                    _tp_max = _fill_px * (1 + 0.98 / 100.0)
-                    _sl_min = _fill_px * (1 - 0.49 / 100.0)
+                    _tp_max = _fill_px * (1 + 0.80 / 100.0)
+                    _sl_min = _fill_px * (1 - 1.00 / 100.0)
                     if _tp_new > _tp_max:
                         _tp_new = _tp_max
                     if _sl_new < _sl_min:
@@ -809,9 +810,10 @@ def sync_order_statuses(ws_t, led, client, st=None):
                         _atr = (_p_sig - _sl_old) / _slm
                         _sl_new = _fill_px - _slm * _atr
                         _tp_new = _fill_px + _tpm * _atr
-                        # G-cap: حداکثر سود خالص 0.8% (TP≤1.08% ناخالص، SL≤0.54% ناخالص)
-                        _tp_max = _fill_px * (1 + 1.08 / 100.0)
-                        _sl_min = _fill_px * (1 - 0.54 / 100.0)
+                        # G-cap2 (اپراتور 1405/08/01): TP≤0.88% ناخالص، SL≤1.10% ناخالص
+                        # (نسخه VWAP scale-in — همان نسبت +10٪ نسبت به site1)
+                        _tp_max = _fill_px * (1 + 0.88 / 100.0)
+                        _sl_min = _fill_px * (1 - 1.10 / 100.0)
                         if _tp_new > _tp_max:
                             _tp_new = _tp_max
                         if _sl_new < _sl_min:
@@ -1047,21 +1049,30 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     tf, sl, tp = row[1], row[9], row[10]
     # گزینهٔ الف (G-volsize): vol-targeted sizing — cap-style
     _size = _eff_order_usdt(row, st)
-    # G-scale: Calculate 2 entry prices for scaling in
-    _price1, _price2 = _calc_scaled_entries(sym, price, row, st)
-    if _price1 is None:
-        _pull = _eff_pullback_pct(row, st) / 100.0
-        _price1 = price * (1 - _pull)
-        _price2 = None
-    # Split volume: 50% each
-    _size1 = round(_size * 0.5, 2)
-    _size2 = round(_size - _size1, 2) if _price2 else 0
+    # G-market-entry (اپراتور 1405/08/01): در مسیر مارکت، قیمت ورود = قیمت
+    # لحظه‌ای بازار و حجم کامل است؛ محاسبه پولبک/نردبان فقط در مسیر limit
+    _is_market = (st.order_type == 'market' and st.entry_mode != 'limit_pullback')
+    if _is_market:
+        _price1, _price2 = price, None
+        _size1 = round(_size, 2)
+        _size2 = 0
+    else:
+        # G-scale: Calculate 2 entry prices for scaling in
+        _price1, _price2 = _calc_scaled_entries(sym, price, row, st)
+        if _price1 is None:
+            _pull = _eff_pullback_pct(row, st) / 100.0
+            _price1 = price * (1 - _pull)
+            _price2 = None
+        # Split volume: 50% each
+        _size1 = round(_size * 0.5, 2)
+        _size2 = round(_size - _size1, 2) if _price2 else 0
     # Order 1 (Fib 0.618)
     vol = math.floor((_size1 / _price1) * 1e8) / 1e8
     if vol <= 0:
         return
     amount = round(_size1, 2)
-    reason = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 1/2 (Fib 0.618)" + _band_tag(st, row)
+    _entry_tag = 'ورود مارکت' if _is_market else 'Scale 1/2 (Fib 0.618)'
+    reason = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | {_entry_tag}" + _band_tag(st, row)
     if dry:
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(_price1), vol, amount,
                      sl, tp, '—', ST_DRY, 'شبیه‌سازی Scale 1/2 — بدون ارسال به صرافی')
@@ -1080,9 +1091,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
                 p['volume'] += vol2
                 p['sim_volume'] = p.get('sim_volume', 0.0) + vol2
         return
-    # G-entry: limit_pullback mode places limit at pullback price
-    _is_market = (st.order_type == 'market' and st.entry_mode != 'limit_pullback')
-    # G-scale: Use pre-calculated scaled entry price
+    # G-scale: Use pre-calculated scaled entry price (market mode: قیمت لحظه‌ای)
     _limit_price = _price1
     code, data = client.place_order('buy', sym, _limit_price, vol, _is_market, client_order_id=coid)
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
@@ -2901,9 +2910,12 @@ def run(sh, st, rows, state=None):
             if bal is None:
                 log.error('خرید %s انجام نشد: موجودی USDT از API قابل دریافت نیست', sym)
                 continue
-        # G-scale: بررسی فقط Scale 1/2 (نصف کل) به‌جای کل مبلغ
-        _half_size = st.order_size_usdt * 0.5
-        if bal < _half_size or bal - _half_size < st.min_usdt_balance:
+        # G-scale: بررسی فقط Scale 1/2 (نصف کل) به‌جای کل مبلغ؛
+        # G-market-entry: در مسیر مارکت حجم کامل لازم است
+        _need_size = (st.order_size_usdt if
+                      (st.order_type == 'market' and st.entry_mode != 'limit_pullback')
+                      else st.order_size_usdt * 0.5)
+        if bal < _need_size or bal - _need_size < st.min_usdt_balance:
             log.info('خرید %s انجام نشد: موجودی USDT کافی نیست (%.1f)', sym, bal)
             continue
         buy_one(st, ws_t, client, dry, sym, a, p, led, coid=f'nbx-{sym.lower().replace("_", "")}-{int(time.time())}')
