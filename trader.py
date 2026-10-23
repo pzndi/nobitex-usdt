@@ -1309,6 +1309,15 @@ def check_sl_tp(st, ws_t, client, dry, led, prices):
         return
     log.info('خروج‌های فعال: %s', '، '.join(f'{s} ({w})' for s, w, _ in exits))
     for sym, why, price in exits:
+        # G-fix: جلوگیری از فروش اضافی بعد از OCO
+        # اگر موجودی فعال صفر یا بسیار کم است، یعنی OCO اجرا شده
+        if client and not dry:
+            _avail = currency_available(client, sym)
+            _rv = led['positions'].get(sym, {}).get('real_volume', 0)
+            if _avail is not None and _rv > 0 and _avail < _rv * 0.5:
+                log.info('G-fix: خروج %s رد شد - OCO اجرا شده (فعال=%s از دفتر=%s) — جبران با reconcile',
+                         sym, fmt_bal(_avail), fmt_bal(_rv))
+                continue
         exit_position(st, ws_t, client, sym, why, price, led)
 
 
