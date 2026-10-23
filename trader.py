@@ -2265,6 +2265,8 @@ def oco_health_check(sh, st, state=None):
             if oid:
                 client.cancel_order(oid)
         
+        # G-fix: محاسبه SL/TP بر اساس VWAP واقعی و کپ، نه SL/TP قدیمی دفتر
+        _entry_vwap, _ = _entry_fill(client, led, sym)
         sl_o, tp_o = None, None
         for _, rr in reversed(led['rows']):
             if rr[1].strip().upper() == sym and rr[2].strip() == 'خرید' and rr[11].strip() in EXECUTED:
@@ -2275,7 +2277,29 @@ def oco_health_check(sh, st, state=None):
         if not (sl_o and tp_o and sl_o > 0 and tp_o > 0):
             log.error('G-oco-health: %s cannot rebuild OCO. SL/TP not found.', sym)
             continue
-            
+        
+        # G-fix: بازمحاسبه SL/TP بر اساس VWAP و کپ
+        if _entry_vwap and _entry_vwap > 0:
+            _slm = getattr(st, 'sl_atr_mult', 0) or 0
+            _tpm = getattr(st, 'tp_atr_mult', 0) or 0
+            if _slm > 0 and _tpm > 0 and sl_o < _entry_vwap:
+                _atr = (_entry_vwap - sl_o) / _slm
+                sl_new = _entry_vwap - _slm * _atr
+                tp_new = _entry_vwap + _tpm * _atr
+                # کپ بر اساس min(VWAP, current_price)
+                _current_px = prices.get(sym) if prices else None
+                _ref_px = min(_entry_vwap, _current_px) if _current_px else _entry_vwap
+                _tp_max = _ref_px * (1 + 0.98 / 100.0)
+                _sl_min = _ref_px * (1 - 0.49 / 100.0)
+                if tp_new > _tp_max:
+                    tp_new = _tp_max
+                if sl_new < _sl_min:
+                    sl_new = _sl_min
+                sl_o = sl_new
+                tp_o = tp_new
+                log.info('G-oco-health: %s SL/TP recalculated: SL=%s TP=%s (VWAP=%s)',
+                         sym, fmt_price(sl_o), fmt_price(tp_o), fmt_price(_entry_vwap))
+        
         vol_o = currency_available(client, sym)
         if vol_o is None or vol_o <= 1e-12:
             vol_o = rv
