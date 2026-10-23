@@ -1089,7 +1089,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
     oid = clean_oid(o.get('id') if isinstance(o, dict) else None or (data.get('id') if isinstance(data, dict) else ''))
     if ok:
-        record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
+        record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(_limit_price), vol, amount,
                      sl, tp, oid, ST_PLACED, str(data)[:80])
         p = led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0, 'real_volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
         p['volume'] += vol
@@ -1115,7 +1115,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
                 o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
                 oid2 = clean_oid(o2.get('id') if isinstance(o2, dict) else None or (data2.get('id') if isinstance(data2, dict) else ''))
                 if ok2:
-                    record_trade(ws_t, 'خرید', sym, tf, reason2, fmt_price(price), vol2, amount2,
+                    record_trade(ws_t, 'خرید', sym, tf, reason2, fmt_price(_price2), vol2, amount2,
                                  sl, tp, oid2, ST_PLACED, str(data2)[:80])
                     p2 = led['positions'].get(sym) or led['positions'].setdefault(sym, {'volume': 0.0, 'sim_volume': 0.0, 'real_volume': 0.0, 'entry_price': None, 'sl': None, 'tp': None})
                     p2['volume'] += vol2
@@ -1205,7 +1205,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
                     log.info('G-ump: %s price moved %.1f%% (>2%%) — skipping (rally too fast)',
                              sym, _dev)
         log.error('ثبت سفارش واقعی خرید %s ناموفق: HTTP %s | %s', sym, code, str(data)[:150])
-        record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(price), vol, amount,
+        record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(_limit_price), vol, amount,
                      sl, tp, '', 'ناموفق', str(data)[:100])
 
 
