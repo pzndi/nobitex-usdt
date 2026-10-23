@@ -1988,8 +1988,10 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
                 _dur_an = round((_now_a - _t0.togregorian()).total_seconds() / 3600, 1)
             except Exception:
                 pass
-            _record_analysis(ws_t, sym, _entry_an, _exit_an, _vol_an,
-                            _pnl_an, _pct_an, _dur_an,
+            _record_analysis(ws_t, sym, _entry_an, _real_exit, _vol_an,
+                            _vol_an * (_real_exit - _entry_an) - _real_sell_fee - _buy_fee_n7,
+                            (_real_exit / _entry_an - 1) * 100 if _entry_an else 0.0,
+                            _dur_an,
                             'خروج از کیف پول (OCO یا فروش دستی)',
                             led, client, st)
         except Exception:
