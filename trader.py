@@ -1956,6 +1956,29 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
                        and rr[11].strip() in EXECUTED), '—')
         record_closed(ws_t, sym, e_time, _entry_n7 or p.get('entry_price') or price, price,
                       sold, 'خروج از کیف پول (OCO یا فروش دستی)', 'واقعی', fee_usdt=_sell_fee_n7 + _buy_fee_n7)
+        # G-analysis: ثبت تحلیل معامله در تب «تحلیل معاملات»
+        try:
+            _entry_an = _entry_n7 or p.get('entry_price') or price
+            _exit_an = price
+            _vol_an = sold
+            _pnl_an = _vol_an * (_exit_an - _entry_an) - _sell_fee_n7 - _buy_fee_n7
+            _pct_an = (_exit_an / _entry_an - 1) * 100 if _entry_an else 0.0
+            _dur_an = '—'
+            try:
+                import jdatetime as _jd
+                import datetime as _dt
+                _t0 = _jd.datetime.strptime(str(e_time).strip(), '%Y/%m/%d %H:%M')
+                _now_a = (_dt.datetime.now(_dt.timezone.utc)
+                          + _dt.timedelta(hours=3, minutes=30)).replace(tzinfo=None)
+                _dur_an = round((_now_a - _t0.togregorian()).total_seconds() / 3600, 1)
+            except Exception:
+                pass
+            _record_analysis(ws_t, sym, _entry_an, _exit_an, _vol_an,
+                            _pnl_an, _pct_an, _dur_an,
+                            'خروج از کیف پول (OCO یا فروش دستی)',
+                            led, client, st)
+        except Exception:
+            log.exception('خطا در ثبت تحلیل معامله %s (reconcile)', sym)
         led['positions'].pop(sym, None)
         led['pending_sells'].discard(sym)
         led['pending'].discard(sym)
