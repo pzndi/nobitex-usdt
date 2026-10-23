@@ -587,6 +587,16 @@ def read_ledger(ws, dust_usdt=0.5):
                 if is_sim:
                     s_[1] += vol
                     led['dry_net_spent'] -= amt
+                # F9 (اپراتور 1405/08/01): مرزگذاری پوزیشنی — با خروج کامل
+                # (net <= 0) انباشتگرهای نماد صفر می‌شوند تا entry_price
+                # پوزیشن بعدی = VWAP همین دوره باشد نه میانگین بی‌مرز کل
+                # دفتر (شاهد: ZEC 1338.50 کاذب در برابر VWAP 1236.15).
+                # خروج کامل از هر مسیر (OCO/TTL/گارد خودی/G-timeout) از
+                # همین شاخه عبور می‌کند. dust باقی‌مانده عمداً حفظ می‌شود.
+                if bought.get(sym, [0.0])[0] - s_[0] <= 1e-12:
+                    bought.pop(sym, None)
+                    sold.pop(sym, None)
+                    sltp.pop(sym, None)
     for sym in set(list(bought) + list(sold)):
         b = bought.get(sym, [0.0, 0.0, 0.0])
         s_ = sold.get(sym, [0.0, 0.0])
