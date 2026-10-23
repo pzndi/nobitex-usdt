@@ -629,6 +629,10 @@ def sync_order_statuses(ws_t, led, client, st=None):
         legs = {}
         for oid in oids:
             code, data = client.order_status(oid)
+            # G-fix: وقتی یک لگ OCO اجرا می‌شود، لگ دیگر حذف می‌شود (404)
+            # این لگ را نادیده بگیریم - لگ دیگر Done خواهد بود
+            if code == 404 or (isinstance(data, dict) and str(data.get('error')) == 'NotFound'):
+                continue
             o = data.get('order') if isinstance(data, dict) else None
             raw = o.get('status') if isinstance(o, dict) else None
             if raw in api_map:
