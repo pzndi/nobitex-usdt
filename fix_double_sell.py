@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""fix_double_sell.py - جلوگیری از فروش اضافی بعد از OCO
-
-مشکل: وقتی OCO اجرا می‌شود (SL یا TP)، ربات هنوز پوزیشن را باز می‌بیند
-و سفارش فروش اضافی (Market) ثبت می‌کند.
-
-شاهد: MEW OCO SL اجرا شد (5089 فروخته)، سپس ربات 5114 MEW هم فروخت.
-
-راه‌حل: در check_sl_tp، قبل از فروش، بررسی کن که آیا سکه‌ها در کیف پول هستند.
-اگر موجودی فعال < 50% حجم پوزیشن، یعنی OCO اجرا شده و نباید فروش اضافی کرد.
-"""
+"""fix_double_sell.py - جلوگیری از فروش اضافی بعد از OCO"""
 import os, sys, shutil, time
 
 DEPLOY = '--deploy' in sys.argv
@@ -45,12 +36,11 @@ T_NEW = """def check_sl_tp(st, ws_t, client, dry, led, prices):
     log.info('خروج‌های فعال: %s', '، '.join(f'{s} ({w})' for s, w, _ in exits))
     for sym, why, price in exits:
         # G-fix: جلوگیری از فروش اضافی بعد از OCO
-        # اگر موجودی فعال صفر یا بسیار کم است، یعنی OCO اجرا شده
         if client and not dry:
             _avail = currency_available(client, sym)
             _rv = led['positions'].get(sym, {}).get('real_volume', 0)
             if _avail is not None and _rv > 0 and _avail < _rv * 0.5:
-                log.info('G-fix: خروج %s رد شد - OCO اجرا شده (فعال=%s از دفتر=%s) — جبران با reconcile',
+                log.info('G-fix: خروج %s رد شد - OCO اجرا شده (فعال=%s از دفتر=%s)',
                          sym, fmt_bal(_avail), fmt_bal(_rv))
                 continue
         exit_position(st, ws_t, client, sym, why, price, led)"""
