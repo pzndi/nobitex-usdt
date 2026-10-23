@@ -999,9 +999,9 @@ def _bb_lower_band(closes, period=20, std=2.0):
 def _calc_scaled_entries(sym, price, row, st):
     """G-scale v2: نوسان-محور - محاسبه ۲ قیمت ورود بر اساس نوسان ۴ ساعت اخیر
     - نوسان = (max(highs[-4:]) - min(lows[-4:])) / price × 100
-    - مپینگ نوسان به pullback در محدوده [0.1%, 1.5%]:
-      vol ≤ 0.5% → pullback = 0.1% (کم‌نوسان = ورود نزدیک)
-      vol ≥ 5.0% → pullback = 1.5% (پرنوسان = ورود دورتر)
+    - مپینگ نوسان به pullback در محدوده [0.05%, 0.5%]:
+      vol ≤ 0.5% → pullback = 0.05% (کم‌نوسان = ورود نزدیک)
+      vol ≥ 5.0% → pullback = 0.5% (پرنوسان = ورود دورتر)
       بین این دو → خطی
     - Scale 1/2 = price * (1 - pullback/100)
     - Scale 2/2 = Scale 1/2 * 0.999 (همیشه 0.1% پایین‌تر از Scale 1/2)
@@ -1021,8 +1021,8 @@ def _calc_scaled_entries(sym, price, row, st):
         # مپینگ نوسان به pullback در محدوده [0.1%, 1.5%]
         MIN_VOL = 0.5   # نوسان کم → حداقل پولبک
         MAX_VOL = 5.0   # نوسان زیاد → حداکثر پولبک
-        MIN_PB = 0.1    # حداقل پولبک (٪)
-        MAX_PB = 1.5    # حداکثر پولبک (٪)
+        MIN_PB = 0.05   # حداقل پولبک (٪) - نزدیک به بازار برای پر شدن سریع‌تر
+        MAX_PB = 0.5    # حداکثر پولبک (٪) - حداکثر فاصله از بازار
         if volatility_pct <= MIN_VOL:
             pullback_pct = MIN_PB
         elif volatility_pct >= MAX_VOL:
