@@ -299,6 +299,17 @@ def main():
     lines = read_log_tail_24h()
     print(f'\n📝 خطوط لاگ تحلیل‌شده: {len(lines)}')
     
+    # G-analysis: خواندن تب تحلیل معاملات
+    try:
+        import trader
+        from settings import load_env
+        import gspread as _gs
+        _e = load_env()
+        _gc = _gs.service_account(filename='service_account.json')
+        sh = _gc.open_by_key(_e['SHEET_ID'])
+    except Exception:
+        sh = None
+    
     positions_data = get_open_positions_summary()
     
     # 1. آمار Scale (از ledger)
@@ -362,6 +373,48 @@ def main():
     else:
         print(f'  ⚠ خطا در دریافت پوزیشن‌ها: {positions_data.get("error", "نامشخص")}')
     
+    # 5.5. خلاصه تب تحلیل معاملات (داده‌های واقعی)
+    print('\n━━━ ۵.۵) خلاصه تحلیل معاملات (از تب تحلیل) ━━━')
+    try:
+        ws_an = sh.worksheet(trader.ANALYSIS_TAB)
+        an_vals = ws_an.get_all_values()
+        an_data = an_vals[3:] if len(an_vals) > 3 else []
+        if an_data:
+            an_wins = 0
+            an_losses = 0
+            an_total_pnl = 0.0
+            for row in an_data:
+                if not row or not any(str(c).strip() for c in row):
+                    continue
+                result = str(row[2]).strip() if len(row) > 2 else ''
+                pnl_str = str(row[4]).strip() if len(row) > 4 else '0'
+                try:
+                    pnl = float(pnl_str)
+                except:
+                    pnl = 0.0
+                if result == 'برد':
+                    an_wins += 1
+                elif result == 'باخت':
+                    an_losses += 1
+                an_total_pnl += pnl
+            an_total = an_wins + an_losses
+            an_winrate = (an_wins / an_total * 100) if an_total > 0 else 0
+            print(f'  تعداد معاملات: {an_total}')
+            print(f'  برد/باخت: {an_wins}/{an_losses}')
+            print(f'  نرخ برد: {an_winrate:.1f}%')
+            print(f'  P&L کل (واقعی): {an_total_pnl:+.4f} USDT')
+            # میانگین سود و ضرر
+            if an_wins > 0:
+                win_avg = sum(float(row[4]) for row in an_data if len(row) > 4 and str(row[2]).strip() == 'برد' and _safe_float(row[4]) is not None) / an_wins
+                print(f'  میانگین سود: {win_avg:+.4f} USDT')
+            if an_losses > 0:
+                loss_avg = sum(float(row[4]) for row in an_data if len(row) > 4 and str(row[2]).strip() == 'باخت' and _safe_float(row[4]) is not None) / an_losses
+                print(f'  میانگین ضرر: {loss_avg:+.4f} USDT')
+        else:
+            print('  (هنوز داده‌ای در تب تحلیل نیست)')
+    except Exception as e:
+        print(f'  ⚠ خطا در خواندن تب تحلیل: {e}')
+
     # 6. توصیه‌ها
     print('\n━━━ ۶) توصیه‌های خودکار ━━━')
     recs = make_recommendations(scale_stats, pnl_stats, oco_stats, guard_counts, positions_data)
