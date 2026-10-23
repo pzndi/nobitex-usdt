@@ -623,6 +623,11 @@ def sync_order_statuses(ws_t, led, client, st=None):
       این محل اصلی OCO برای سفارش‌های limit است که با تأخیر پر می‌شوند"""
     api_map = {'Active': ST_OPEN, 'Done': ST_FILLED,
                'Inactive': ST_PENDING_STOP, 'Canceled': ST_CANCELLED}
+    # F10 (اپراتور 1405/08/01): وضعیت OCOهای همین اجرا — ردیف‌های ثبت‌شده
+    # بعد از snapshot دفتر در led['rows'] نیستند؛ G-scale باید آنها را هم
+    # برای لغو ببیند (شاهد: MEW 15:37 — لغوی بی‌اثر → AmountToLow).
+    _oco_placed_run = {}
+    _scale_fb_run = {}
     for row_num, r in led['rows']:
         # OCO = two legs; ids joined with | in the ledger
         oids = [clean_oid(x) for x in str(r[10]).split('|')]
@@ -792,15 +797,41 @@ def sync_order_statuses(ws_t, led, client, st=None):
             if _is_scale_in:
                 # G-scale VWAP: Scale-in detected! Cancel existing OCO and recalculate based on VWAP
                 log.info('G-scale: Scale-in detected for %s. Canceling existing OCO...', sym_c)
+                # F10 (اپراتور 1405/08/01): لغوی راستی‌آزمایی‌شدهٔ OCO در G-scale.
+                # ریشهٔ MEW 15:37: هر دو پلهٔ fill در همان اجرا رسیدند؛ ردیف OCO#1
+                # بعد از snapshot ثبت شده بود → اسکن led['rows'] آن را نمی‌دید →
+                # «لغو» بی‌اثر + ثبت مجدد با موجودی قفل‌شده در OCO زنده = AmountToLow.
+                _tgt = [x for x in (_oco_placed_run.get(sym_c) or []) if x]
+                _tgt_rows = []
                 for _rn, _rr in led['rows']:
-                    if (_rr[1].strip().upper() == sym_c and 'OCO' in str(_rr[4]) 
+                    if (_rr[1].strip().upper() == sym_c and 'OCO' in str(_rr[4])
                             and _rr[11].strip() in OPENISH):
-                        _oids = [clean_oid(x) for x in str(_rr[10]).split('|')]
-                        _oids = [x for x in _oids if x and x != chr(8212)]
-                        for _oid in _oids:
-                            client.cancel_order(_oid)
-                        ws_t.update_cell(_rn, 12, 'لغو شده')
-                        break
+                        _oids2 = [clean_oid(x) for x in str(_rr[10]).split('|')]
+                        _tgt.extend(x for x in _oids2 if x and x != chr(8212))
+                        _tgt_rows.append(_rn)
+                _tgt = list(dict.fromkeys(_tgt))
+                if not _tgt:
+                    log.info('G-scale %s: OCO زنده‌ای برای لغو نیست — ثبت مستقیم OCO تازه روی کل موجودی', sym_c)
+                else:
+                    _cancel_ok = True
+                    for _oid in _tgt:
+                        _cc, _cd = client.cancel_order(_oid)
+                        _ok_c = (_cc == 200 and (not isinstance(_cd, dict)
+                                                 or _cd.get('status') != 'failed'))
+                        if not _ok_c and isinstance(_cd, dict) and str(_cd.get('error')) == 'NotFound':
+                            _ok_c = True
+                        if not _ok_c:
+                            _cancel_ok = False
+                            log.error('G-scale %s: لغو پایه OCO %s ناموفق: HTTP %s | %s',
+                                      sym_c, _oid, _cc, str(_cd)[:100])
+                    if not _cancel_ok:
+                        log.error('G-scale %s: لغو ناقص — OCO صرافی دست‌نخورده ماند؛ انکرهای فعلی حفظ و ثبت مجدد skipped',
+                                  sym_c)
+                        continue
+                    for _rn in _tgt_rows:
+                        ws_t.update_cell(_rn, 12, ST_CANCELLED)
+                    # انکرهای این ردیف (fill-anchored، پیش از بازنویسی VWAP) برای fallback
+                    _scale_fb_run[sym_c] = (parse_price(r[8]), parse_price(r[9]))
                 led.get('pending_sells', set()).discard(sym_c)
                 
                 # Fetch VWAP from real trades
@@ -884,6 +915,27 @@ def sync_order_statuses(ws_t, led, client, st=None):
                             pass
                 code2, data2 = client.place_oco_sell(sym_c, vol_o, tp_o, sl_o)
                 ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+                # F10d: شکست ثبت با انکر VWAP → بازگشت با انکرهای پیش از اسکیل‌این
+                # (الگوی F5 در تریلینگ — کاهش پنجرهٔ بی‌حفاظتی به ثانیه)
+                if not ok2 and sym_c in _scale_fb_run:
+                    _fb = _scale_fb_run.pop(sym_c)
+                    if (_fb and _fb[0] and _fb[1]
+                            and (abs(_fb[0] - sl_o) > 1e-12 or abs(_fb[1] - tp_o) > 1e-12)):
+                        try:
+                            code2, data2 = client.place_oco_sell(sym_c, vol_o, _fb[1], _fb[0])
+                        except Exception:
+                            code2, data2 = None, None
+                        ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+                        if ok2:
+                            sl_o, tp_o = _fb[0], _fb[1]
+                            r[8], r[9] = fmt_price(sl_o), fmt_price(tp_o)
+                            try:
+                                ws_t.update_cell(row_num, 9, r[8])
+                                ws_t.update_cell(row_num, 10, r[9])
+                            except Exception:
+                                pass
+                            log.warning('G-scale %s: ثبت OCO با انکر VWAP ناموفق — بازگشت به انکرهای پیش از اسکیل‌این (SL=%s | TP=%s)',
+                                        sym_c, r[8], r[9])
                 o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
                 leg_ids = []
                 if isinstance(o2, dict):
@@ -906,6 +958,7 @@ def sync_order_statuses(ws_t, led, client, st=None):
                                  oid_oco, ST_PLACED,
                                  'OCO: TP=' + fmt_price(tp_o) + ' | SL=' + fmt_price(sl_o))
                     led.setdefault('pending_sells', set()).add(sym_c)
+                    _oco_placed_run[sym_c] = [x for x in oid_oco.split('|') if x]
                     log.info('OCO بومی صرافی برای %s ثبت شد (TP=%s | SL=%s)',
                              sym_c, fmt_price(tp_o), fmt_price(sl_o))
                 else:
