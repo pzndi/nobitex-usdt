@@ -2056,7 +2056,7 @@ def cancel_stale_entries(st, ws_t, client, led):
         oid = clean_oid(o.get('pairId'))
         if not oid:
             for _rn, _rr in led.get('rows') or []:
-                if (len(_rr) > 11 and str(_rr[1]).strip().upper() == sym
+                if (len(_rr) > 11 and _norm_sym(_rr[1]) == _norm_sym(sym)
                         and str(_rr[2]).strip() == 'خرید'
                         and str(_rr[11]).strip() in OPENISH):
                     _c = clean_oid(_rr[10])
@@ -2100,6 +2100,9 @@ def cancel_stale_entries(st, ws_t, client, led):
                     ws_t.update_cell(row_num, 12, ST_CANCELLED)
                     break
             led['pending'].discard(sym)
+            for _ps in list(led.get('pending') or ()):
+                if _norm_sym(_ps) == _norm_sym(sym):
+                    led['pending'].discard(_ps)
             log.info('سفارش ورود کهنه لغو شد: %s (سن %.0f دقیقه)', sym, age_min)
         elif isinstance(data_c, dict) and str(data_c.get('error')) == 'NotFound':
             # سفارش در فاصله fetch→cancel از لیست خارج شده (fill/لغو بیرونی) —
@@ -2109,6 +2112,14 @@ def cancel_stale_entries(st, ws_t, client, led):
             log.warning('لغو سفارش کهنه %s ناموفق: %s', sym, str(data_c)[:120])
 
 
+
+
+def _norm_sym(s):
+    """F11a: نرمال‌سازی نماد برای مقایسه — حذف نویسه‌های غیر الفبایی‌عددی.
+    شاهد: cid سفارش 'nbx-1mpepe-…' (بدون زیرخط) در برابر نماد دفتر '1M_PEPE'
+    → جستجوی oid در لغو TTL هرگز منطبق نمی‌شد و هر تیک WARNING می‌زد."""
+    import re as _re_n
+    return _re_n.sub(r'[^A-Z0-9]', '', str(s).upper())
 def reconcile_real_positions(st, ws_t, client, led, prices):
     """تطبیق پوزیشن‌های واقعی با کیف پول نوبیتکس (منبع حقیقت).
     اگر اکثر سکه‌های یک پوزیشن واقعی از کیف پول رفته باشند (اجرای OCO روی
