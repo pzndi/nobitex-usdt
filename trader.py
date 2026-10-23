@@ -1706,6 +1706,30 @@ def apply_trailing(st, ws_t, led, prices, client=None):
         if has_oco:
             if client is None or (p.get('real_volume') or 0) <= 1e-12:
                 continue
+            # F5 (اپراتور 1405/08/01): قیمت تازه + کلمپ SL — ریشهٔ PriceConditionFailed (حادثهٔ 13:37 ZEC)
+            _px_f5 = None
+            try:
+                _px_f5 = _public_price(sym)
+            except Exception:
+                _px_f5 = None
+            _tp_f5 = p.get("tp")
+            if _px_f5 and _tp_f5 and _px_f5 >= _tp_f5 * (1 - 0.004):
+                # قیمت چسبیده به TP یا بالاتر — بازسازی ریسکی/بیهوده است؛ پایهٔ TP خودش پر می‌شود
+                continue
+            if _px_f5 and _px_f5 > 0:
+                _sl_cap_f5 = _px_f5 * (1 - 0.004)
+                if new_sl > _sl_cap_f5:
+                    log.info('OCO متحرک %s: SL جدید %s بالاتر از کلمپ %s (قیمت لحظه‌ای %s) — کلمپ شد',
+                             sym, fmt_price(new_sl), fmt_price(_sl_cap_f5), fmt_price(_px_f5))
+                    new_sl = _sl_cap_f5
+            if new_sl <= sl:
+                # کلمپ SL را به زیر حد فعلی برگرداند — بهبودی نیست
+                continue
+            if oco_sl is not None and new_sl <= oco_sl * 1.005:
+                # بعد از کلمپ بهبودی نسبت به SL صرافی نماند — OCO فعلی سالم است؛ لغو/بازسازی نکن
+                p["sl"] = oco_sl
+                set_sheet_sl(oco_sl)
+                continue
             old_ids = [clean_oid(x) for x in str(oco_row[1][10]).split('|')
                        if clean_oid(x) and clean_oid(x) != chr(8212)]
             cancel_ok = bool(old_ids)
@@ -1745,8 +1769,24 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                 led['pending_sells'].discard(sym)
                 log.error('OCO متحرک %s: حجم/TP نامعتبر — حفاظت با خود ربات', sym)
                 continue
-            code2, data2 = client.place_oco_sell(sym, vol_o, tp_o, new_sl)
+            try:
+                code2, data2 = client.place_oco_sell(sym, vol_o, tp_o, new_sl)
+            except Exception as _exc_f5:
+                code2, data2 = None, {'exception': str(_exc_f5)}
             ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+            if not ok2:
+                # F5 (اپراتور 1405/08/01): بازگشت فوری با SL/TP قبلی — پنجرهٔ بی‌حفاظتی
+                # از ~۳.۵ دقیقه (انتظار برای تور ایمنی تیک بعد) به ثانیه کاهش می‌یابد
+                _sl_fb_f5 = oco_sl or sl
+                try:
+                    code2, data2 = client.place_oco_sell(sym, vol_o, tp_o, _sl_fb_f5)
+                except Exception:
+                    code2, data2 = None, None
+                ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
+                if ok2:
+                    new_sl = _sl_fb_f5
+                    log.warning('OCO متحرک %s: SL جدید رد شد — بازگشت فوری با SL قبلی %s',
+                                sym, fmt_price(_sl_fb_f5))
             if not ok2:
                 led['pending_sells'].discard(sym)
                 log.error('ثبت OCO متحرک %s ناموفق: HTTP %s | %s — حفاظت با خود ربات',
