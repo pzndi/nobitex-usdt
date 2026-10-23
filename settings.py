@@ -17,7 +17,7 @@ TRADING_KEYS = {'TRADING_ENABLED', 'DRY_RUN', 'MAX_DAILY_TRADES', 'ORDER_TYPE',
                 'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN', 'PUMP_GUARD_PCT', 'LOSS_STREAK_LIMIT', 'LOSS_STREAK_WINDOW_H', 'USE_BT_PARAMS', 'BLOCKED_SYMBOLS', 'FREE_SYMBOLS', 'MAX_SL_MULT', 'TREND_FILTER_ENABLED', 'TRAIL_ATR_MULT', 'PARTIAL_EXIT_PCT', 'PARTIAL_EXIT_TRIGGER', 'ENTRY_MODE', 'PULLBACK_PCT', 'POSITION_TIMEOUT_H', 'POSITION_TIMEOUT_MIN_PCT', 'MAX_SL_BAND_PCT', 'MIN_TFS'}
 GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK',
                    'INTERVAL_UNIVERSE_MIN', 'INTERVAL_SIGNALS_MIN', 'INTERVAL_BACKTEST_MIN',
-                   'INTERVAL_WALLET_MIN', 'INTERVAL_GUARDS_MIN', 'INTERVAL_OCO_HEALTH_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME'}
+                   'INTERVAL_WALLET_MIN', 'INTERVAL_GUARDS_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME'}
 
 RES_FALLBACK = {'1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '3h': '180',
                 '4h': '240', '6h': '360', '12h': '720', '1D': '1D', '2D': '2D', '3D': '3D'}
@@ -45,7 +45,6 @@ DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
                    'INTERVAL_UNIVERSE_MIN': '120', 'INTERVAL_SIGNALS_MIN': '5',
                    'INTERVAL_BACKTEST_MIN': '30', 'INTERVAL_WALLET_MIN': '30',
                   'INTERVAL_GUARDS_MIN': '5',
-                  'INTERVAL_OCO_HEALTH_MIN': '10',
                    'BACKTEST_TIMEFRAME': '1D', 'SLTP_TIMEFRAME': '1h'}
 
 
@@ -126,7 +125,6 @@ PARAM_RANGES = {
     'INTERVAL_BACKTEST_MIN':   (5, 1440),
     'INTERVAL_WALLET_MIN':     (1, 1440),
     'INTERVAL_GUARDS_MIN':     (1, 1440),
-    'INTERVAL_OCO_HEALTH_MIN': (5, 1440),
 }
 
 
@@ -404,10 +402,6 @@ class Settings:
     @property
     def interval_guards_min(self):
         return self._interval('INTERVAL_GUARDS_MIN', 5)
-
-    @property
-    def interval_oco_health_min(self):
-        return self._interval('INTERVAL_OCO_HEALTH_MIN', 10)
 
     @property
     def sltp_timeframe(self):
