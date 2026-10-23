@@ -1333,7 +1333,11 @@ def check_position_timeout(st, ws_t, client, dry, led, prices):
         px = prices.get(sym)
         if px is None:
             continue
-        entry = p.get('entry_price') or 0
+        # F8a (اپراتور 1405/08/01): entry_price در read_ledger میانگین بی‌مرزِ همهٔ
+        # خریدهای اجراشدهٔ دفتر است (ZEC: 1338.50 کاذب در برابر VWAP واقعی 1236.15
+        # → P&L کاذب −8.4٪ → فروش اجباری G-timeout بر مبنای غلط). مبنای درست:
+        # قیمت آخرین خرید همین نماد — هم‌راستا با Fix-C تریلینگ و Fix-B بسته‌شدن.
+        entry = _last_buy_price(led, sym) or p.get('entry_price') or 0
         if entry <= 0:
             continue
         pnl_pct = (px / entry - 1) * 100
@@ -1379,7 +1383,8 @@ def sell_one(st, ws_t, client, dry, sym, reason, price, vol, led):
         return
     amount = round(vol * price, 2)
     pos = led['positions'].get(sym) or {}
-    entry = pos.get('entry_price')
+    # F8b: نمایش P&L بر مبنای آخرین خرید (entry_price کهنه — هم‌راستا با Fix-B)
+    entry = _last_buy_price(led, sym) or pos.get('entry_price')
     pnl = round(vol * price - vol * entry, 2) if entry else None
     pnl_msg = f' | P&L: {pnl:+.2f} USDT' if pnl is not None else ''
     e_time = next((rr[0] for _, rr in led['rows']
