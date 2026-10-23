@@ -12,6 +12,13 @@ NOW = datetime.now()
 CUTOFF = NOW - timedelta(hours=24)
 
 
+def _safe_float(v):
+    try:
+        return float(v)
+    except:
+        return None
+
+
 def read_log_tail_24h():
     """خواندن لاگ در ۲۴ ساعت اخیر"""
     if not os.path.exists(LOG_PATH):
