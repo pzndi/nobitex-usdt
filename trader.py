@@ -1703,6 +1703,18 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                         if _pe_avail is not None:
                             _pe_remaining = min(_pe_remaining, _pe_avail)
                         if _pe_remaining > 1e-12 and _pe_sl and _pe_tp:
+                            # F8c (اپراتور 1405/08/01): کلمپ SL بازثبتِ پس از خروج جزئی — پنجمین سایت
+                            # ثبت OCO که بی‌کلمپ ماند (خانوادهٔ PriceConditionFailed صبح)
+                            try:
+                                _px_f8 = _public_price(sym)
+                            except Exception:
+                                _px_f8 = None
+                            if _px_f8 and _px_f8 > 0 and _pe_sl:
+                                _sl_cap_f8 = _px_f8 * (1 - 0.004)
+                                if _pe_sl > _sl_cap_f8:
+                                    log.info('G-pexit %s: SL بازثبت %s → کلمپ %s (قیمت لحظه‌ای %s)',
+                                             sym, fmt_price(_pe_sl), fmt_price(_sl_cap_f8), fmt_price(_px_f8))
+                                    _pe_sl = _sl_cap_f8
                             _c2, _d2 = client.place_oco_sell(sym, _pe_remaining, _pe_tp, _pe_sl)
                             _ok2 = _c2 == 200 and isinstance(_d2, dict) and _d2.get('status') == 'ok'
                             if _ok2:
