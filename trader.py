@@ -799,7 +799,14 @@ def sync_order_statuses(ws_t, led, client, st=None):
                     _fill_px = _vwap
                     # G-fix: اگر VWAP بالاتر از قیمت بازار است، از قیمت بازار استفاده کن
                     # این از خطای PriceConditionFailed و اجرای سریع SL جلوگیری می‌کند
-                    _current_px = prices.get(sym_c)
+                    # F4 (اپراتور 1405/08/01): prices در این تابع تعریف نشده بود و
+                    # گذار scale-in را با NameError می‌کشت (حادثهٔ 06:26 MEW).
+                    # تکمیل کلمپ نیمه‌کارهٔ G-fix با قیمت لحظه‌ای:
+                    _current_px = None
+                    try:
+                        _current_px = _public_price(sym_c)
+                    except Exception:
+                        _current_px = None
                     if _current_px and _current_px < _fill_px:
                         _fill_px = _current_px
                     _p_sig = parse_price(r[5])
