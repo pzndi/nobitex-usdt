@@ -849,6 +849,29 @@ def sync_order_statuses(ws_t, led, client, st=None):
                 log.warning('OCO در sync برای %s رد شد: vol=%s | sl=%s | tp=%s | matchedAmount=%s',
                             sym_c, vol_o, sl_o, tp_o, o.get('matchedAmount'))
             if vol_o > 1e-12 and sl_o and tp_o:
+                # F7a (اپراتور 1405/08/01): قیمت تازه + کلمپ SL + defer — ریشهٔ
+                # PriceConditionFailed در گذار fill (MEW 08:53 و 1M_PEPE 10:15×2)
+                _px_f7 = None
+                try:
+                    _px_f7 = _public_price(sym_c)
+                except Exception:
+                    _px_f7 = None
+                if _px_f7 and _px_f7 > 0:
+                    if _px_f7 <= sl_o or _px_f7 >= tp_o:
+                        # قیمت روی/زیر SL یا روی/بالای TP — استاپ فروش رد می‌شود؛ خروج با check_sl_tp
+                        log.info('OCO گذار fill %s به check_sl_tp واگذار شد — قیمت لحظه‌ای %s خارج از باند SL=%s..TP=%s',
+                                 sym_c, fmt_price(_px_f7), fmt_price(sl_o), fmt_price(tp_o))
+                        continue
+                    _sl_cap_f7 = _px_f7 * (1 - 0.004)
+                    if sl_o > _sl_cap_f7:
+                        log.info('OCO گذار fill %s: SL %s → کلمپ %s (قیمت لحظه‌ای %s)',
+                                 sym_c, fmt_price(sl_o), fmt_price(_sl_cap_f7), fmt_price(_px_f7))
+                        sl_o = _sl_cap_f7
+                        try:
+                            r[8] = fmt_price(sl_o)
+                            ws_t.update_cell(row_num, 9, r[8])
+                        except Exception:
+                            pass
                 code2, data2 = client.place_oco_sell(sym_c, vol_o, tp_o, sl_o)
                 ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
                 o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
@@ -1152,6 +1175,17 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
                 log.warning('OCO فوری %s رد شد: موجودی فعال=%s | SL=%s | TP=%s — تور ایمنی چرخه بعد جبران می‌کند',
                             sym, avail_o, sl_o, tp_o)
             else:
+                # F7c (اپراتور 1405/08/01): کلمپ SL با قیمت لحظه‌ای — همان الگوی F7a برای مسیر مارکت
+                try:
+                    _px_f7c = _public_price(sym)
+                except Exception:
+                    _px_f7c = None
+                if _px_f7c and _px_f7c > 0 and sl_o:
+                    _sl_cap_f7c = _px_f7c * (1 - 0.004)
+                    if sl_o > _sl_cap_f7c:
+                        log.info('OCO فوری %s: SL %s → کلمپ %s (قیمت لحظه‌ای %s)',
+                                 sym, fmt_price(sl_o), fmt_price(_sl_cap_f7c), fmt_price(_px_f7c))
+                        sl_o = _sl_cap_f7c
                 code2, data2 = client.place_oco_sell(sym, vol_o, tp_o, sl_o)
                 ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
                 o2 = (data2.get('order') or {}) if isinstance(data2, dict) else {}
@@ -2356,6 +2390,13 @@ def backfill_oco(st, ws_t, client, led, prices):
         if vol_o <= 1e-12:
             log.warning('OCO تور ایمنی %s: موجودی فعال صرافی صفر است', sym)
             continue
+        # F7b (اپراتور 1405/08/01): کلمپ SL — قیمت داخل باند ولی چسبیده به SL؛
+        # ریشهٔ PriceConditionFailed تور ایمنی (MEW 08:54 و 1M_PEPE 10:16)
+        _sl_cap_f7b = price * (1 - 0.004)
+        if sl > _sl_cap_f7b:
+            log.info('OCO تور ایمنی %s: SL %s → کلمپ %s (قیمت لحظه‌ای %s)',
+                     sym, fmt_price(sl), fmt_price(_sl_cap_f7b), fmt_price(price))
+            sl = _sl_cap_f7b
         code2, data2 = client.place_oco_sell(sym, vol_o, tp, sl)
         ok2 = code2 == 200 and isinstance(data2, dict) and data2.get('status') == 'ok'
         if not ok2:
