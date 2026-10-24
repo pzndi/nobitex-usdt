@@ -10,3 +10,4 @@ state.json
 sheet_dump.txt
 update.log.*.gz
 *_dump.txt
+*.bak-*
