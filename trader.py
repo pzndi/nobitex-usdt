@@ -269,6 +269,20 @@ def _record_analysis(ws_t, sym, entry_price, exit_price, vol, pnl, pct, dur, rea
 def record_closed(ws_t, sym, entry_time, entry_price, exit_price, vol, reason, mode, fee_usdt=0.0):
     """ثبت معامله بسته‌شده در تب «اتمام معاملات»"""
     try:
+        # G-unit (r17): گارد واحد — درس فساد 07/30 (pct در جای pnl / قیمت نماد دیگر)
+        try:
+            entry_price = float(entry_price or 0.0)
+            exit_price = float(exit_price or 0.0)
+            vol = float(vol or 0.0)
+        except (TypeError, ValueError):
+            entry_price = exit_price = vol = 0.0
+        _unit_ok = entry_price > 0 and exit_price > 0 and vol > 0
+        if _unit_ok and abs(vol * (exit_price - entry_price)) > 0.30 * vol * entry_price + 0.05:
+            _unit_ok = False
+        if not _unit_ok:
+            log.error('G-unit: ورودی ناسازگار در بستن %s (entry=%s exit=%s vol=%s | %s) — با پرچم ثبت شد',
+                      sym, entry_price, exit_price, vol, reason)
+            mode = (str(mode) + ' | ⚠️ G-unit')[:120]
         pnl = vol * (exit_price - entry_price) - float(fee_usdt or 0.0)
         pct = (exit_price / entry_price - 1) * 100 if entry_price else 0.0
         dur = '—'
@@ -289,7 +303,7 @@ def record_closed(ws_t, sym, entry_time, entry_price, exit_price, vol, reason, m
                          reason, dur, mode])
         log.info('معامله %s بسته شد — P&L: %+.2f USDT (%s)', sym, pnl, reason)
     except Exception:
-        log.exception('خطا در ثبت معامله بسته‌شده %s', sym)  # حداقل تعداد تایم‌فریم هم‌جهت برای صدور سفارش
+        log.exception('خطا در ثبت معامله بسته‌شده %s', sym)
 
 
 # ================= کلاینت API معاملاتی =================
