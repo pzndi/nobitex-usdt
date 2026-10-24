@@ -675,7 +675,14 @@ def sync_order_statuses(ws_t, led, client, st=None):
             except (TypeError, ValueError):
                 matched = 0.0
             if matched > 0:
-                new_st = ST_PARTIAL
+                # G-partial (P2b): خریدِ نیمه‌پرِ لغوشده -> «پر شد» با حجم واقعی؛
+                # گذار fill همان تیک روی بخشِ پرشده OCO می‌گذارد. («بخشی پر» =
+                # لیمبوی بی‌حفاظ: نه پوزیشن، نه OCO، نه check_sl_tp.)
+                # فروش‌ها دست‌نخورده — همان ST_PARTIAL قبلی.
+                if str(r[2]).strip() == 'خرید':
+                    new_st = ST_FILLED
+                else:
+                    new_st = ST_PARTIAL
                 vol_update = matched
         if raw == 'Done':
             try:
@@ -685,8 +692,13 @@ def sync_order_statuses(ws_t, led, client, st=None):
                 pass
         if new_st != str(r[11]).strip():
             ws_t.update_cell(row_num, 12, new_st)
+            # G-mem (P5): حافظهٔ درون‌تیکی همگام شود — وگرنه _entry_fill/VWAPِ
+            # همین تیک وضعیت کهنه می‌دید (شاهد 19:38: VWAP=169.42 از چرخهٔ
+            # بستهٔ قبلی به‌جای 172.19 -> باند غلط -> defer بی‌مورد).
+            r[11] = new_st
             if vol_update is not None:
                 ws_t.update_cell(row_num, 7, vol_update)
+                r[6] = vol_update
             log.info('وضعیت سفارش %s → %s', '|'.join(oids), new_st)
 
         sym_c = r[1].strip().upper()
@@ -830,6 +842,10 @@ def sync_order_statuses(ws_t, led, client, st=None):
                         continue
                     for _rn in _tgt_rows:
                         ws_t.update_cell(_rn, 12, ST_CANCELLED)
+                    # G-log (P4): لغوی موفق تا حالا بی‌صدا بود (شاهد: ردیف 698
+                    # ساعت 20:49). یک خط INFO برای ردگیری.
+                    log.info('G-scale %s: لغو %d لگ OCO انجام شد (ردیف‌ها: %s)',
+                             sym_c, len(_tgt), _tgt_rows or '—')
                     # انکرهای این ردیف (fill-anchored، پیش از بازنویسی VWAP) برای fallback
                     _scale_fb_run[sym_c] = (parse_price(r[8]), parse_price(r[9]))
                 led.get('pending_sells', set()).discard(sym_c)
@@ -899,9 +915,21 @@ def sync_order_statuses(ws_t, led, client, st=None):
                     _px_f7 = None
                 if _px_f7 and _px_f7 > 0:
                     if _px_f7 <= sl_o or _px_f7 >= tp_o:
-                        # قیمت روی/زیر SL یا روی/بالای TP — استاپ فروش رد می‌شود؛ خروج با check_sl_tp
-                        log.info('OCO گذار fill %s به check_sl_tp واگذار شد — قیمت لحظه‌ای %s خارج از باند SL=%s..TP=%s',
-                                 sym_c, fmt_price(_px_f7), fmt_price(sl_o), fmt_price(tp_o))
+                        # G-instant-exit (P3): قیمت لحظه‌ای بیرونِ باند یعنی TP/SL
+                        # همین حالا لمس شده. واگذاری به check_sl_tp پنجرهٔ بی‌حفاظ
+                        # می‌سازد (شاهد 05:34: سه fill در 173.52 بالای TP؛ خروج
+                        # نهایی 168.45 -> ضرر -0.14 به‌جای سود ~+0.10).
+                        _why = 'حد سود' if _px_f7 >= tp_o else 'حد ضرر'
+                        log.info('G-instant-exit %s: قیمت لحظه‌ای %s بیرونِ باند SL=%s..TP=%s — فروش فوری (%s)',
+                                 sym_c, fmt_price(_px_f7), fmt_price(sl_o), fmt_price(tp_o), _why)
+                        _sold = False
+                        if st is not None:
+                            _sold = sell_one(st, ws_t, client, False, sym_c, _why,
+                                             _px_f7, vol_o, led)
+                        if _sold:
+                            led.setdefault('pending_sells', set()).add(sym_c)
+                        else:
+                            log.warning('G-instant-exit %s انجام نشد — خروج به check_sl_tp واگذار شد', sym_c)
                         continue
                     _sl_cap_f7 = _px_f7 * (1 - 0.004)
                     if sl_o > _sl_cap_f7:
@@ -2038,8 +2066,6 @@ def cancel_stale_entries(st, ws_t, client, led):
             matched = float(str(o.get('matchedAmount') or 0).replace(',', ''))
         except (TypeError, ValueError):
             matched = 0.0
-        if matched > 0:            # پرشدن جزئی — لغو نکن
-            continue
         cid = str(o.get('clientOrderId') or '')
         m = _re.match(r'^nbx-([a-z0-9]+)-(\d{9,})$', cid)
         if not m:                  # سفارش خود ربات نیست (دستی/نامشخص) — دست نزن
@@ -2048,6 +2074,12 @@ def cancel_stale_entries(st, ws_t, client, led):
         age_min = (time.time() - epoch) / 60.0
         if age_min < st.entry_ttl_min:
             continue
+        if matched > 0:
+            # G-partial (P2a): نیمه‌پرِ کهنه دیگر بی‌صدا رد نمی‌شود (شبح 1472:
+            # fill جزئی پیش از 05:02، بی‌حفاظ تا پرشد کامل در کرش 05:34) —
+            # باقیمانده لغو می‌شود تا بخشِ پرشده همان تیک محافظت‌شدنی شود.
+            log.info('TTL %s: سفارش نیمه‌پر کهنه (سن %.0f دقیقه، پرشده=%s) — لغو باقیمانده',
+                     sym, age_min, matched)
         # G-cancel: apiv2 برای سفارش‌های دارای clientOrderId فیلد pairId در
         # orders/list نمی‌فرستد → شناسه عددی از ردیف خرید باز همان نماد در دفتر
         # (ثبت‌شده هنگام ثبت سفارش از پاسخ orders/add).
@@ -2095,15 +2127,35 @@ def cancel_stale_entries(st, ws_t, client, led):
         ok = (code_c in (200, 201)
               and not (isinstance(data_c, dict) and data_c.get('status') == 'failed'))
         if ok:
+            _c_row = None
             for row_num, rr in led['rows']:
                 if oid in str(rr[10]).replace(',', ''):
-                    ws_t.update_cell(row_num, 12, ST_CANCELLED)
+                    _c_row = row_num
+                    if matched <= 0:
+                        ws_t.update_cell(row_num, 12, ST_CANCELLED)
                     break
-            led['pending'].discard(sym)
-            for _ps in list(led.get('pending') or ()):
-                if _norm_sym(_ps) == _norm_sym(sym):
-                    led['pending'].discard(_ps)
-            log.info('سفارش ورود کهنه لغو شد: %s (سن %.0f دقیقه)', sym, age_min)
+            if matched > 0:
+                # G-partial (P1b): ردیف نیمه‌پر را «لغو شده» نکن — بخشِ پرشده باید
+                # از مسیر همگام‌سازی (Canceled+matched -> «پر شد» + گذار fill + OCO)
+                # پوزیشنِ محافظت‌شده شود؛ علامت‌گذاری اینجا مسیر گذار را می‌بُرد.
+                log.info('TTL %s: باقیماندهٔ سفارش نیمه‌پر لغو شد (پرشده=%s) — '
+                         'ثبت بخشِ پرشده به همگام‌سازی واگذار شد', sym, matched)
+            else:
+                # G-pending (P1a): pending نماد-محور است؛ لغوی یکی از چند سفارشِ بازِ
+                # نماد نباید نماد را از pending بردارد (شبح 05:02: لغوی یک پله
+                # دروازهٔ خرید را همان تیک باز کرد -> سه نسل نردبان در کرش 05:34).
+                _still = any(_rn != _c_row
+                             and str(_rr[2]).strip() == 'خرید'
+                             and _norm_sym(_rr[1]) == _norm_sym(sym)
+                             and str(_rr[11]).strip() in OPENISH
+                             for _rn, _rr in (led.get('rows') or []))
+                if not _still:
+                    led['pending'].discard(sym)
+                    for _ps in list(led.get('pending') or ()):
+                        if _norm_sym(_ps) == _norm_sym(sym):
+                            led['pending'].discard(_ps)
+                log.info('سفارش ورود کهنه لغو شد: %s (سن %.0f دقیقه)%s', sym, age_min,
+                         ' — نماد در pending ماند (سفارش باز دیگر)' if _still else '')
         elif isinstance(data_c, dict) and str(data_c.get('error')) == 'NotFound':
             # سفارش در فاصله fetch→cancel از لیست خارج شده (fill/لغو بیرونی) —
             # وضعیت واقعی را همگام‌سازی چرخه بعد تعیین می‌کند؛ دفتر دست نمی‌خورد
