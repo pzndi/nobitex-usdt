@@ -78,7 +78,8 @@ ST_PENDING_STOP = 'در انتظار تریگر'
 EXECUTED = {ST_DRY, ST_FILLED, ST_PARTIAL}
 OPENISH = {ST_PLACED, ST_OPEN, ST_PENDING_STOP}
 
-MIN_TFS = 3  # بهبود: ورود نیازمند ≥۳ TF رأی خرید — کلاس 2/4 حذف (تحلیل ۱۵۵ پوزیشن؛ era-mixed)
+MIN_TFS = 3       # fallback وقتی st در دسترس نیست — مقدار زنده: st.min_tfs از تب تنظیمات
+MIN_TFS_SELL = 3  # fallback فروش — مقدار زنده: st.min_tfs_sell از تب تنظیمات (P1)
 
 
 def _record_analysis(ws_t, sym, entry_price, exit_price, vol, pnl, pct, dur, reason, led, client, st):
@@ -578,8 +579,9 @@ def is_buy_candidate(a, st=None):
             and a['buys'] > a['sells'])
 
 
-def is_sell_candidate(a):
-    return (a['sells'] >= MIN_TFS and a['sells'] >= (a['total'] + 1) // 2
+def is_sell_candidate(a, st=None):
+    _min_tfs = st.min_tfs_sell if st is not None else MIN_TFS_SELL
+    return (a['sells'] >= _min_tfs and a['sells'] >= (a['total'] + 1) // 2
             and a['sells'] > a['buys'])
 
 
@@ -2074,9 +2076,9 @@ def write_ranking(sh, st, rows, led, bt_params=None):
             status = 'پوزیشن باز'
         elif sym in led.get('pending', set()):
             status = 'سفارش باز'
-        elif (n_buys >= MIN_TFS and n_buys >= (len(sym_rows) + 1) // 2
+        elif (n_buys >= st.min_tfs and n_buys >= (len(sym_rows) + 1) // 2
                 and n_buys > n_sells):
-            status = 'کاندید خرید'  # معیار واقعی (سازگار با MIN_TFS/G-rank)
+            status = 'کاندید خرید'  # معیار واقعی — همان st.min_tfs که سفارش با آن ثبت می‌شود
         else:
             status = '—'
         reason = _buy_reason(sym_rows) if status == 'کاندید خرید' else '—'
@@ -3065,7 +3067,7 @@ def run(sh, st, rows, state=None):
     # ۱) فروش پوزیشن‌هایی که سیگنال فروش اکثریت گرفته‌اند
     for sym in list(led['positions']):
         a = agg.get(sym)
-        if not (a and is_sell_candidate(a)):
+        if not (a and is_sell_candidate(a, st)):
             continue
         if sym in led.get('pending_sells', set()):
             log.info('فروش سیگنالی %s رد شد: OCO بومی باز است — خروج با صرافی', sym)
