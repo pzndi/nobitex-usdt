@@ -167,7 +167,7 @@ def main():
     if ran:
         log.info('چرخه‌های این تیک: %s', '، '.join(ran))
     else:
-        log.info('تیک: چیزی سررسید نبود (universe=%d | backtest=%d | signals=%d | wallet=%d دقیقه)',
+        log.info('تیک: چیزی سررسید نبود (universe=%d | backtest=%d | signals=%d | wallet=%d دقیقه | guards=%d)',
                  st.interval_universe_min, st.interval_backtest_min,
                  st.interval_signals_min, st.interval_wallet_min,
                  st.interval_guards_min)
