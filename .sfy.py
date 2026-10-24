@@ -588,6 +588,7 @@ def p2_preflight():
 
 
 def run_sheet(rows):
+    raise RuntimeError('r32: sheet-insert disabled (rows added separately)')
     import gspread
     from settings import load_env
     sh = gspread.service_account(filename='service_account.json').open_by_key(

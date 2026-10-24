@@ -23,17 +23,9 @@ import strategy_engine as se
 log = logging.getLogger('nobitex-bot')
 
 BT_TAB = 'بک تست'
-OPTIMIZE_THRESHOLD = False   # فاز ۳ T1: آستانه از شیت — نه از گرید
-THRESHOLDS = [60, 70, 80]    # فقط وقتی OPTIMIZE_THRESHOLD=True
-SL_MULTS = [1.5, 2.0, 2.5]
-TP_MULTS = [2.0, 3.0, 4.0]
-MIN_TRADES = 8               # حداقل معامله روی داده آموزش
-MIN_TEST_TRADES = 2          # حداقل معامله روی holdout برای قضاوت
-WARMUP = 60
-LOOKBACK = 480
-HOLDOUT = 0.30               # ۳۰٪ آخر = داده اعتبارسنجی
-FEE_RT_PCT = 0.25            # کارمزد رفت‌وبرگشت (٪) — اندازه‌گیری‌شده
-SL_SLIP_PCT = 0.35           # اسلپیج StopLimit (٪) — فقط خروج استاپ
+# P2: پارامترهای بک‌تست از تب تنظیمات (BT_*) — پیش‌فرض‌ها = مقادیر قبلی کد
+FEE_RT_PCT_DEFAULT = 0.25    # فقط پیش‌فرضِ امضای simulate برای فراخوانی مستقیم
+SL_SLIP_PCT_DEFAULT = 0.35
 
 try:
     import datetime as _dt
@@ -50,14 +42,15 @@ except ImportError:
         return (datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)).strftime('%Y-%m-%d %H:%M')
 
 
-def simulate(v, c, thr, slm, tpm, i0, i1):
+def simulate(v, c, thr, slm, tpm, i0, i1,
+             fee_pct=FEE_RT_PCT_DEFAULT, slip_pct=SL_SLIP_PCT_DEFAULT):
     """شبیه‌سازی روی کندل‌های [i0, i1) با مدل هزینه — خروجی: PnL خالص هر معامله"""
     closes, highs, lows = c['c'], c['h'], c['l']
     trades = []
     in_pos = False
     entry = sl = tp = 0.0
-    fee = FEE_RT_PCT / 100.0
-    slip = SL_SLIP_PCT / 100.0
+    fee = fee_pct / 100.0
+    slip = slip_pct / 100.0
     for i in range(i0, i1):
         p = closes[i]
         tot = v['buy'][i] + v['sell'][i] + v['neutral'][i]
@@ -82,19 +75,21 @@ def simulate(v, c, thr, slm, tpm, i0, i1):
 
 
 def backtest_symbol(st, sym):
-    c = se.fetch_candles(sym + 'USDT', st.backtest_timeframe, LOOKBACK)
-    if not c or len(c['c']) < WARMUP + 60:
+    lookback, warmup = st.bt_lookback, st.bt_warmup
+    c = se.fetch_candles(sym + 'USDT', st.backtest_timeframe, lookback)
+    if not c or len(c['c']) < warmup + 60:
         return None
     v = se.prepare_votes(c, st)
     n = len(c['c'])
-    split = int(n * (1 - HOLDOUT))
-    thr_grid = THRESHOLDS if OPTIMIZE_THRESHOLD else [st.threshold_pct]
+    split = int(n * (1 - st.bt_holdout))
+    thr_grid = st.bt_threshold_grid if st.bt_optimize_threshold else [st.threshold_pct]
     best = None
     for thr in thr_grid:
-        for slm in SL_MULTS:
-            for tpm in TP_MULTS:
-                tr_train = simulate(v, c, thr, slm, tpm, WARMUP, split)
-                if len(tr_train) < MIN_TRADES:
+        for slm in st.bt_sl_mults:
+            for tpm in st.bt_tp_mults:
+                tr_train = simulate(v, c, thr, slm, tpm, warmup, split,
+                                    fee_pct=st.bt_fee_rt_pct, slip_pct=st.bt_sl_slip_pct)
+                if len(tr_train) < st.bt_min_trades:
                     continue
                 pnl_train = sum(tr_train) * 100.0
                 if best is None or pnl_train > best['pnl_train']:
@@ -105,9 +100,10 @@ def backtest_symbol(st, sym):
     if best is None:
         return None
     # اعتبارسنجی روی داده unseen — همان پارامترها باید آنجا هم سود خالص بدهند
-    tr_test = simulate(v, c, best['thr'], best['slm'], best['tpm'], split, n)
+    tr_test = simulate(v, c, best['thr'], best['slm'], best['tpm'], split, n,
+                       fee_pct=st.bt_fee_rt_pct, slip_pct=st.bt_sl_slip_pct)
     best['pnl_test'] = sum(tr_test) * 100.0
-    if len(tr_test) < MIN_TEST_TRADES or best['pnl_test'] <= 0:
+    if len(tr_test) < st.bt_min_test_trades or best['pnl_test'] <= 0:
         return None
     best['pnl'] = best['pnl_train']   # سازگاری با ستون «بازده کل ٪» شیت
     return best

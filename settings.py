@@ -14,10 +14,10 @@ TRADING_KEYS = {'TRADING_ENABLED', 'DRY_RUN', 'MAX_DAILY_TRADES', 'ORDER_TYPE',
                 'ORDER_SIZE_USDT', 'MAX_OPEN_POSITIONS', 'MIN_USDT_BALANCE', 'DRY_START_USDT',
                 'SL_ATR_MULT', 'TP_ATR_MULT', 'USE_EXCHANGE_OCO',
                 'TRAIL_ENABLED', 'TRAIL_ACTIVATION_PCT', 'TRAIL_DISTANCE_PCT', 'DUST_USDT',
-                'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN', 'PUMP_GUARD_PCT', 'LOSS_STREAK_LIMIT', 'LOSS_STREAK_WINDOW_H', 'USE_BT_PARAMS', 'BLOCKED_SYMBOLS', 'FREE_SYMBOLS', 'MAX_SL_MULT', 'TREND_FILTER_ENABLED', 'TRAIL_ATR_MULT', 'PARTIAL_EXIT_PCT', 'PARTIAL_EXIT_TRIGGER', 'ENTRY_MODE', 'PULLBACK_PCT', 'POSITION_TIMEOUT_H', 'POSITION_TIMEOUT_MIN_PCT', 'MAX_SL_BAND_PCT', 'MIN_TFS'}
+                'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN', 'PUMP_GUARD_PCT', 'LOSS_STREAK_LIMIT', 'LOSS_STREAK_WINDOW_H', 'USE_BT_PARAMS', 'BLOCKED_SYMBOLS', 'FREE_SYMBOLS', 'MAX_SL_MULT', 'TREND_FILTER_ENABLED', 'TRAIL_ATR_MULT', 'PARTIAL_EXIT_PCT', 'PARTIAL_EXIT_TRIGGER', 'ENTRY_MODE', 'PULLBACK_PCT', 'SLBUF_MIN_PCT', 'POSITION_TIMEOUT_H', 'POSITION_TIMEOUT_MIN_PCT', 'MAX_SL_BAND_PCT', 'MIN_TFS', 'MIN_TFS_SELL'}
 GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK',
                    'INTERVAL_UNIVERSE_MIN', 'INTERVAL_SIGNALS_MIN', 'INTERVAL_BACKTEST_MIN',
-                   'INTERVAL_WALLET_MIN', 'INTERVAL_GUARDS_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME'}
+                   'INTERVAL_WALLET_MIN', 'INTERVAL_GUARDS_MIN', 'INTERVAL_AUTO_BLOCK_MIN', 'INTERVAL_ARCHIVE_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME', 'BT_OPTIMIZE_THRESHOLD', 'BT_THRESHOLD_GRID', 'BT_SL_MULTS', 'BT_TP_MULTS', 'BT_MIN_TRADES', 'BT_MIN_TEST_TRADES', 'BT_HOLDOUT_PCT', 'BT_FEE_RT_PCT', 'BT_SL_SLIP_PCT', 'BT_WARMUP', 'BT_LOOKBACK'}
 
 RES_FALLBACK = {'1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '3h': '180',
                 '4h': '240', '6h': '360', '12h': '720', '1D': '1D', '2D': '2D', '3D': '3D'}
@@ -39,13 +39,13 @@ DEFAULT_TRADING = {'TRADING_ENABLED': 'خیر', 'DRY_RUN': 'بله', 'MAX_DAILY_
                    'ORDER_TYPE': 'market', 'ORDER_SIZE_USDT': '50',
                    'MAX_OPEN_POSITIONS': '3', 'MIN_USDT_BALANCE': '20',
                    'DRY_START_USDT': '1000', 'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0', 'USE_EXCHANGE_OCO': 'خیر',
-                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله', 'BLOCKED_SYMBOLS': '', 'FREE_SYMBOLS': '', 'MAX_SL_MULT': '1.5', 'TREND_FILTER_ENABLED': 'بله', 'TRAIL_ATR_MULT': '0.5', 'PARTIAL_EXIT_PCT': '50', 'PARTIAL_EXIT_TRIGGER': '2.0', 'ENTRY_MODE': 'limit_pullback', 'PULLBACK_PCT': '1.0', 'POSITION_TIMEOUT_H': '48', 'POSITION_TIMEOUT_MIN_PCT': '0', 'MAX_SL_BAND_PCT': '8.0', 'MIN_TFS': '3'}
+                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله', 'BLOCKED_SYMBOLS': '', 'FREE_SYMBOLS': '', 'MAX_SL_MULT': '1.5', 'TREND_FILTER_ENABLED': 'بله', 'TRAIL_ATR_MULT': '0.5', 'PARTIAL_EXIT_PCT': '50', 'PARTIAL_EXIT_TRIGGER': '2.0', 'ENTRY_MODE': 'limit_pullback', 'PULLBACK_PCT': '1.0', 'SLBUF_MIN_PCT': '0.5', 'POSITION_TIMEOUT_H': '48', 'POSITION_TIMEOUT_MIN_PCT': '0', 'MAX_SL_BAND_PCT': '8.0', 'MIN_TFS': '3', 'MIN_TFS_SELL': '3'}
 DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
                    'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300',
                    'INTERVAL_UNIVERSE_MIN': '120', 'INTERVAL_SIGNALS_MIN': '5',
                    'INTERVAL_BACKTEST_MIN': '30', 'INTERVAL_WALLET_MIN': '30',
-                  'INTERVAL_GUARDS_MIN': '5',
-                   'BACKTEST_TIMEFRAME': '1D', 'SLTP_TIMEFRAME': '1h'}
+                  'INTERVAL_GUARDS_MIN': '5', 'INTERVAL_AUTO_BLOCK_MIN': '2880', 'INTERVAL_ARCHIVE_MIN': '1440',
+                   'BACKTEST_TIMEFRAME': '1D', 'SLTP_TIMEFRAME': '1h', 'BT_OPTIMIZE_THRESHOLD': 'خیر', 'BT_THRESHOLD_GRID': '60;70;80', 'BT_SL_MULTS': '1.5;2.0;2.5', 'BT_TP_MULTS': '2.0;3.0;4.0', 'BT_MIN_TRADES': '8', 'BT_MIN_TEST_TRADES': '2', 'BT_HOLDOUT_PCT': '30', 'BT_FEE_RT_PCT': '0.25', 'BT_SL_SLIP_PCT': '0.35', 'BT_WARMUP': '60', 'BT_LOOKBACK': '480'}
 
 
 def load_env(path='.env'):
@@ -109,6 +109,7 @@ PARAM_RANGES = {
     'POSITION_TIMEOUT_H':   (0.0, 720.0),
     'POSITION_TIMEOUT_MIN_PCT': (-50.0, 50.0),
     'PULLBACK_PCT':         (0.0, 10.0),
+    'SLBUF_MIN_PCT':         (0.0, 5.0),
     'TRAIL_ATR_MULT':       (0.0, 3.0),
     'MAX_SL_MULT':          (0.0, 5.0),
     'LOSS_STREAK_LIMIT':    (0, 10),
@@ -120,11 +121,21 @@ PARAM_RANGES = {
     'PUMP_GUARD_PCT':       (0.0, 50.0),
     'MAX_SL_BAND_PCT':      (2.0, 20.0),
     'MIN_TFS':              (1.0, 8.0),
+    'MIN_TFS_SELL':         (1.0, 8.0),
     'INTERVAL_UNIVERSE_MIN':   (5, 1440),
     'INTERVAL_SIGNALS_MIN':    (1, 1440),
     'INTERVAL_BACKTEST_MIN':   (5, 1440),
     'INTERVAL_WALLET_MIN':     (1, 1440),
     'INTERVAL_GUARDS_MIN':     (1, 1440),
+    'INTERVAL_AUTO_BLOCK_MIN': (60, 10080),
+    'INTERVAL_ARCHIVE_MIN':    (60, 10080),
+    'BT_MIN_TRADES':         (0, 200),
+    'BT_MIN_TEST_TRADES':    (0, 100),
+    'BT_HOLDOUT_PCT':        (5.0, 50.0),
+    'BT_FEE_RT_PCT':         (0.0, 2.0),
+    'BT_SL_SLIP_PCT':        (0.0, 2.0),
+    'BT_WARMUP':             (20, 200),
+    'BT_LOOKBACK':           (60, 1000),
 }
 
 
@@ -269,6 +280,11 @@ class Settings:
         return max(1, int(self._tnum('MIN_TFS', 3)))
 
     @property
+    def min_tfs_sell(self):
+        """P1: حداقل TF رأی فروش برای خروج سیگنالی — پیش‌فرض 3 = رفتار فعلی"""
+        return max(1, int(self._tnum('MIN_TFS_SELL', 3)))
+
+    @property
     def trend_filter_enabled(self):
         """G-trend: skip all buys when BTC 4h SMA20 < SMA50 (bearish regime)."""
         return truthy(self.trading.get('TREND_FILTER_ENABLED', 'بله'))
@@ -297,6 +313,11 @@ class Settings:
     def pullback_pct(self):
         """G-entry: pullback percentage for limit entry."""
         return max(0.0, min(10.0, self._tnum('PULLBACK_PCT', 1.0)))
+
+    @property
+    def slbuf_min_pct(self):
+        """P4/G-slbuf: حداقل بافر SL نسبت به fill تخمینی (٪). 0 = خاموش"""
+        return min(5.0, max(0.0, self._tnum('SLBUF_MIN_PCT', 0.5)))
 
     @property
     def position_timeout_h(self):
@@ -404,6 +425,16 @@ class Settings:
         return self._interval('INTERVAL_GUARDS_MIN', 5)
 
     @property
+    def interval_auto_block_min(self):
+        """P3: فاصلهٔ چرخهٔ بلاک خودکار نمادها (دقیقه) — پیش‌فرض 2880 = 48 ساعت"""
+        return self._interval('INTERVAL_AUTO_BLOCK_MIN', 2880)
+
+    @property
+    def interval_archive_min(self):
+        """P3: فاصلهٔ چرخهٔ آرشیو سفارشات (دقیقه) — پیش‌فرض 1440 = 24 ساعت"""
+        return self._interval('INTERVAL_ARCHIVE_MIN', 1440)
+
+    @property
     def sltp_timeframe(self):
         """تایم‌فریم مرجع محاسبه SL/TP — باید در فهرست فعال باشد؛ در غیر این صورت اولین فعال"""
         label = str(self.general.get('SLTP_TIMEFRAME') or '1h').strip()
@@ -415,5 +446,59 @@ class Settings:
 
     @property
     def backtest_timeframe(self):
-        return str(self.general.get('BACKSET_TIMEFRAME') or
-                   self.general.get('BACKTEST_TIMEFRAME') or '1D').strip()
+        return str(self.general.get('BACKTEST_TIMEFRAME') or '1D').strip()
+
+    # ---------- P2: پارامترهای بک‌تست (BT_*) — قابل تغییر از شیت ----------
+    @property
+    def bt_optimize_threshold(self):
+        return truthy(self.general.get('BT_OPTIMIZE_THRESHOLD', 'خیر'))
+
+    def _grid(self, key, default):
+        raw = str(self.general.get(key) or default)
+        out = []
+        for part in raw.replace('،', ';').replace(',', ';').split(';'):
+            try:
+                out.append(float(part.strip()))
+            except ValueError:
+                continue
+        return out or [float(x) for x in default.split(';')]
+
+    @property
+    def bt_threshold_grid(self):
+        return sorted({min(90.0, max(1.0, v)) for v in self._grid('BT_THRESHOLD_GRID', '60;70;80')})
+
+    @property
+    def bt_sl_mults(self):
+        return sorted({min(10.0, max(0.1, v)) for v in self._grid('BT_SL_MULTS', '1.5;2.0;2.5')})
+
+    @property
+    def bt_tp_mults(self):
+        return sorted({min(20.0, max(0.1, v)) for v in self._grid('BT_TP_MULTS', '2.0;3.0;4.0')})
+
+    @property
+    def bt_min_trades(self):
+        return max(0, int(_num(self.general.get('BT_MIN_TRADES'), 8)))
+
+    @property
+    def bt_min_test_trades(self):
+        return max(0, int(_num(self.general.get('BT_MIN_TEST_TRADES'), 2)))
+
+    @property
+    def bt_holdout(self):
+        return min(0.5, max(0.05, _num(self.general.get('BT_HOLDOUT_PCT'), 30) / 100.0))
+
+    @property
+    def bt_fee_rt_pct(self):
+        return min(2.0, max(0.0, _num(self.general.get('BT_FEE_RT_PCT'), 0.25)))
+
+    @property
+    def bt_sl_slip_pct(self):
+        return min(2.0, max(0.0, _num(self.general.get('BT_SL_SLIP_PCT'), 0.35)))
+
+    @property
+    def bt_warmup(self):
+        return max(20, min(200, int(_num(self.general.get('BT_WARMUP'), 60))))
+
+    @property
+    def bt_lookback(self):
+        return max(60, min(1000, int(_num(self.general.get('BT_LOOKBACK'), 480))))

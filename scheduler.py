@@ -145,8 +145,8 @@ def main():
     now = time.time()
 
     tasks = [
-        ('auto_block', 48 * 60, lambda: trader.auto_block_update(sh, st)),
-        ('archive', 24 * 60, lambda: trader.archive_orders(sh, st)),
+        ('auto_block', st.interval_auto_block_min, lambda: trader.auto_block_update(sh, st)),
+        ('archive', st.interval_archive_min, lambda: trader.archive_orders(sh, st)),
         ('universe', st.interval_universe_min, lambda: run_universe(sh, st, state)),
         ('backtest', st.interval_backtest_min, lambda: run_backtest(sh, st, state)),
         ('signals', st.interval_signals_min, lambda: run_signals(sh, st, state)),

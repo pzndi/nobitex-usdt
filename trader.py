@@ -78,7 +78,8 @@ ST_PENDING_STOP = 'در انتظار تریگر'
 EXECUTED = {ST_DRY, ST_FILLED, ST_PARTIAL}
 OPENISH = {ST_PLACED, ST_OPEN, ST_PENDING_STOP}
 
-MIN_TFS = 3  # بهبود: ورود نیازمند ≥۳ TF رأی خرید — کلاس 2/4 حذف (تحلیل ۱۵۵ پوزیشن؛ era-mixed)
+MIN_TFS = 3       # fallback وقتی st در دسترس نیست — مقدار زنده: st.min_tfs از تب تنظیمات
+MIN_TFS_SELL = 3  # fallback فروش — مقدار زنده: st.min_tfs_sell از تب تنظیمات (P1)
 
 
 def _record_analysis(ws_t, sym, entry_price, exit_price, vol, pnl, pct, dur, reason, led, client, st):
@@ -578,8 +579,9 @@ def is_buy_candidate(a, st=None):
             and a['buys'] > a['sells'])
 
 
-def is_sell_candidate(a):
-    return (a['sells'] >= MIN_TFS and a['sells'] >= (a['total'] + 1) // 2
+def is_sell_candidate(a, st=None):
+    _min_tfs = st.min_tfs_sell if st is not None else MIN_TFS_SELL
+    return (a['sells'] >= _min_tfs and a['sells'] >= (a['total'] + 1) // 2
             and a['sells'] > a['buys'])
 
 
@@ -2074,9 +2076,9 @@ def write_ranking(sh, st, rows, led, bt_params=None):
             status = 'پوزیشن باز'
         elif sym in led.get('pending', set()):
             status = 'سفارش باز'
-        elif (n_buys >= MIN_TFS and n_buys >= (len(sym_rows) + 1) // 2
+        elif (n_buys >= st.min_tfs and n_buys >= (len(sym_rows) + 1) // 2
                 and n_buys > n_sells):
-            status = 'کاندید خرید'  # معیار واقعی (سازگار با MIN_TFS/G-rank)
+            status = 'کاندید خرید'  # معیار واقعی — همان st.min_tfs که سفارش با آن ثبت می‌شود
         else:
             status = '—'
         reason = _buy_reason(sym_rows) if status == 'کاندید خرید' else '—'
@@ -2695,6 +2697,38 @@ def _guard_active(st, cond):
     return bool(getattr(st, cond, 0))
 
 
+def _parse_guard_line(line):
+    """P4: استخراج (زمان تهران جلالی، نماد، علت کامل) از یک خط لاگ EDT"""
+    import re as _re
+    from datetime import datetime as _dt
+    out_time = out_sym = out_reason = None
+    mt = _re.match(r'(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})', line)
+    if mt:
+        try:
+            naive = _dt.strptime(mt.group(1) + ' ' + mt.group(2), '%Y-%m-%d %H:%M:%S')
+            try:
+                from zoneinfo import ZoneInfo
+                teh = naive.replace(tzinfo=ZoneInfo('America/New_York')
+                                    ).astimezone(ZoneInfo('Asia/Tehran'))
+            except Exception:
+                teh = naive
+            try:
+                import jdatetime
+                out_time = jdatetime.datetime.fromgregorian(
+                    datetime=teh.replace(tzinfo=None)).strftime('%Y/%m/%d %H:%M')
+            except Exception:
+                out_time = teh.strftime('%Y/%m/%d %H:%M')
+        except Exception:
+            out_time = mt.group(2)
+    ms = _re.search(r'(?:skip buy|خرید|فروش)\s+(\w+)', line)
+    if ms:
+        out_sym = ms.group(1)
+    mr = _re.search(r'\]\s+(.+)$', line)
+    if mr:
+        out_reason = mr.group(1).strip()[:80]
+    return out_time, out_sym, out_reason
+
+
 def write_guards_status(sh, st, state=None):
     """G-guards: live status of all guards + last trigger + today count"""
     import os as _os, re as _re
@@ -2729,19 +2763,22 @@ def write_guards_status(sh, st, state=None):
             for line in recent_lines:
                 if pattern in line:
                     count += 1
-                    last_time = line[:19].split(' ')[1] if ' ' in line else line[:19]
-                    m = _re.search(r'(?:skip buy|خرید)\s+(\w+)', line)
-                    if m:
-                        last_sym = m.group(1)
-                    if ':' in line:
-                        parts = line.split(':', 2)
-                        if len(parts) >= 3:
-                            last_reason = parts[2].strip()[:60]
+                    _gt, _gs, _gr = _parse_guard_line(line)
+                    if _gt:
+                        last_time = _gt
+                    if _gs:
+                        last_sym = _gs
+                    if _gr:
+                        last_reason = _gr
             note = ''
             if cond is not True and cond is not False:
                 val = getattr(st, cond, 0)
                 note = '%s=%s' % (cond, val)
             duty = GUARDS_DUTY.get(name, '')
+            if name == 'PUMP_GUARD_PCT':
+                duty = 'رد ورود اگر قیمت بیش از %.0f%% بالای SMA20 ساعتی — زنده از تنظیمات' % st.pump_guard_pct
+            elif name == 'G_SLBUF':
+                duty = 'رد ورود اگر بافر SL نسبت به fill تخمینی < %.1f%% (SLBUF_MIN_PCT)' % st.slbuf_min_pct
             rows.append([name, duty, status, last_time, last_sym, last_reason, count, note])
         # گسترش ستون‌ها اگر تب قدیمی با 7 ستون ساخته شده بود
         if ws.col_count < 8:
@@ -2977,7 +3014,7 @@ def _sl_buffer_skip(a, st):
     _pp = st.pullback_pct if mkt else _eff_pullback_pct(row, st)
     fill = p if mkt else p * (1 - _pp / 100.0)
     buf = (fill - sl) / fill * 100.0
-    return (buf < 0.5), buf, fill
+    return (buf < st.slbuf_min_pct), buf, fill
 
 
 def _rank_candidates(agg, st=None):
@@ -3065,7 +3102,7 @@ def run(sh, st, rows, state=None):
     # ۱) فروش پوزیشن‌هایی که سیگنال فروش اکثریت گرفته‌اند
     for sym in list(led['positions']):
         a = agg.get(sym)
-        if not (a and is_sell_candidate(a)):
+        if not (a and is_sell_candidate(a, st)):
             continue
         if sym in led.get('pending_sells', set()):
             log.info('فروش سیگنالی %s رد شد: OCO بومی باز است — خروج با صرافی', sym)
@@ -3128,8 +3165,8 @@ def run(sh, st, rows, state=None):
         # به کلید شیت پس از walk-forward
         _skip_buf, _buf, _fill_est = _sl_buffer_skip(a, st)
         if _skip_buf:
-            log.info('skip buy %s: SL buffer %.2f%% < 0.5%% at est. fill %.6g',
-                     sym, _buf, _fill_est)
+            log.info('skip buy %s: SL buffer %.2f%% < %.1f%% at est. fill %.6g',
+                 sym, _buf, st.slbuf_min_pct, _fill_est)
             continue
         # گزینهٔ ب (G-bandcap): سقف عرض استاپ — رد دُم پرنوسان (STRK 8.8٪،
         # WAL 11.1٪ → رد؛ BAT 6.3٪ → عبور با سایزِ کاهش‌یافته از گزینهٔ الف)
