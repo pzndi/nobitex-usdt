@@ -399,23 +399,61 @@ class NobitexClient:
                           'order': o}
         return code, data
 
-    def place_oco_sell(self, symbol, volume, take_profit, stop_price, stop_limit=None):
+    def place_oco_sell(self, symbol, volume, take_profit, stop_price, stop_limit=None, ref_price=None):
         """OCO فروش — حد سود (limit) + حد ضرر (stop-limit) بومی روی صرافی
         مستندات p117: mode=oco + price + stopPrice + stopLimitPrice
-        شرط فروش: stopPrice < قیمت بازار < price"""
-        if stop_limit is None:
-            stop_limit = (stop_price or 0) * 0.995
-        payload = {'type': 'sell',
-                   'market': f'{symbol}USDT',
-                   'srcCurrency': symbol.lower(),
-                   'dstCurrency': 'usdt',
-                   'price': fmt_amt(take_profit),
-                   'amount': fmt_amt(volume),
-                   'execution': 'limit',
-                   'mode': 'oco',
-                   'stopPrice': fmt_amt(stop_price),
-                   'stopLimitPrice': fmt_amt(stop_limit)}
-        return self._sc.post('/market/orders/add', payload)
+        شرط فروش: stopPrice < قیمت بازار < price
+        G4 (اپراتور 1405/08/02): کلمپ و پایش شرط قیمت داخل خود متد —
+        پوشش هر ۷ نقطهٔ فراخوان بدون تغییر امضای فراخوان‌ها:
+        ۱) SL به زیر 99.6٪ قیمت مرجع (ref_price یا لحظه‌ای عمومی) کلمپ می‌شود
+        ۲) پاسخ PriceConditionFailed → یک تلاش مجدد با قیمت تازه
+        ۳) شکست نهایی → همان پاسخ برمی‌گردد (تور ایمنی/F5 چرخهٔ بعد جبران می‌کند)"""
+        def _oco_post(tp, sp, slt):
+            if slt is None:
+                slt = (sp or 0) * 0.995
+            payload = {'type': 'sell',
+                       'market': f'{symbol}USDT',
+                       'srcCurrency': symbol.lower(),
+                       'dstCurrency': 'usdt',
+                       'price': fmt_amt(tp),
+                       'amount': fmt_amt(volume),
+                       'execution': 'limit',
+                       'mode': 'oco',
+                       'stopPrice': fmt_amt(sp),
+                       'stopLimitPrice': fmt_amt(slt)}
+            return self._sc.post('/market/orders/add', payload)
+
+        tp, sp, slt = take_profit, stop_price, stop_limit
+
+        def _live_px():
+            if ref_price:
+                return ref_price
+            try:
+                return _public_price(symbol)
+            except Exception:
+                return None
+
+        px = _live_px()
+        if px and px > 0 and sp and sp > px * (1 - 0.004):
+            _cap = px * (1 - 0.004)
+            log.info('G4: OCO %s SL %s → کلمپ %s (قیمت %s)',
+                     symbol, fmt_price(sp), fmt_price(_cap), fmt_price(px))
+            sp = _cap
+            if slt is not None and slt > sp * 0.995:
+                slt = sp * 0.995
+        code, data = _oco_post(tp, sp, slt)
+        ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
+        if not ok and 'PriceCondition' in str(data):
+            px2 = _live_px()
+            if px2 and px2 > 0:
+                sp2 = min(sp, px2 * (1 - 0.004)) if sp else px2 * (1 - 0.004)
+                tp2 = tp
+                if tp2 and tp2 <= px2:
+                    tp2 = px2 * 1.001
+                log.warning('G4: OCO %s رد شد (شرط قیمت) — تلاش مجدد: SL=%s TP=%s (قیمت %s)',
+                            symbol, fmt_price(sp2), fmt_price(tp2), fmt_price(px2))
+                code, data = _oco_post(tp2, sp2, None)
+        return code, data
 
 
 def make_client():
