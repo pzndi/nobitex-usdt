@@ -221,7 +221,7 @@ def sec_disk():
     rots = sorted(f for f in os.listdir('.') if f.startswith('update.log.'))
     if rots:
         print('  چرخش:', ', '.join(rots))
-    baks = sorted(f for f in os.listdir('.') if re.match(r'trader\.py\.bak\.', f))
+    baks = sorted(f for f in os.listdir('.') if re.match(r'trader\.py\.bak-\d{8}-\d{6}', f))
     if baks:
         print(f'  ⚠ بکاپ‌های باقی‌مانده ({len(baks)}): {", ".join(baks)}')
     else:

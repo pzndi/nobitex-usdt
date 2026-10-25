@@ -2753,6 +2753,15 @@ def write_guards_status(sh, st, state=None):
         except Exception:
             pass
         rows = []
+        _ref_time = None  # G-syms: ref = newest log timestamp
+        for _line in reversed(recent_lines):
+            _mt = _re.match(r'(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})', _line)
+            if _mt:
+                try:
+                    _ref_time = _dt.strptime(_mt.group(1) + ' ' + _mt.group(2), '%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    pass
+                break
         for name, pattern, cond in GUARDS_DEFS:
             active = _guard_active(st, cond)
             status = 'فعال' if active else 'غیرفعال'
@@ -2760,6 +2769,7 @@ def write_guards_status(sh, st, state=None):
             last_time = '—'
             last_sym = '—'
             last_reason = '—'
+            syms = []  # G-syms: distinct symbols rejected in last 60 min
             for line in recent_lines:
                 if pattern in line:
                     count += 1
@@ -2768,8 +2778,19 @@ def write_guards_status(sh, st, state=None):
                         last_time = _gt
                     if _gs:
                         last_sym = _gs
+                    if _gs and _gs not in syms:
+                        _mt = _re.match(r'(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})', line)
+                        if _mt and _ref_time:
+                            try:
+                                _lt = _dt.strptime(_mt.group(1) + ' ' + _mt.group(2), '%Y-%m-%d %H:%M:%S')
+                                if 0 <= (_ref_time - _lt).total_seconds() <= 3600:
+                                    syms.append(_gs)
+                            except Exception:
+                                pass
                     if _gr:
                         last_reason = _gr
+            if syms:
+                last_sym = '، '.join(syms[-5:]) + (' ...' if len(syms) > 5 else '')
             note = ''
             if cond is not True and cond is not False:
                 val = getattr(st, cond, 0)
@@ -2785,7 +2806,7 @@ def write_guards_status(sh, st, state=None):
             ws.add_cols(8 - ws.col_count)
         ws.update(values=[['پایش زنده گاردها', 'به‌روزرسانی:', jnow()]],
                   range_name='A1:C1')
-        ws.update(values=[['نام گارد', 'وظیفه', 'وضعیت', 'آخرین رد (۲۴س)', 'نماد', 'علت', 'تعداد (۲۴س)', 'یادداشت']],
+        ws.update(values=[['نام گارد', 'وظیفه', 'وضعیت', 'آخرین رد (۲۴س)', 'نمادها (۶۰د)', 'علت', 'تعداد (۲۴س)', 'یادداشت']],
                   range_name='A3:H3')
         data = rows + [[''] * 8] * max(0, 25 - len(rows))
         ws.update(values=data, range_name='A4:H%d' % (4 + len(data) - 1))
