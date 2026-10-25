@@ -1181,7 +1181,7 @@ def _calc_scaled_entries(sym, price, row, st):
       vol ≥ 5.0% → pullback = 0.5% (پرنوسان = ورود دورتر)
       بین این دو → خطی
     - Scale 1/2 = price * (1 - pullback/100)
-    - Scale 2/2 = Scale 1/2 * 0.999 (همیشه 0.1% پایین‌تر از Scale 1/2)
+    - Scale 2/2 = Scale 1/2 * 0.995 (همیشه 0.5% پایین‌تر از Scale 1/2)
     """
     try:
         c = fetch_candles(sym + 'USDT', '60', 10)
@@ -1227,10 +1227,16 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     # G-market-entry (اپراتور 1405/08/01): در مسیر مارکت، قیمت ورود = قیمت
     # لحظه‌ای بازار و حجم کامل است؛ محاسبه پولبک/نردبان فقط در مسیر limit
     _is_market = (st.order_type == 'market' and st.entry_mode != 'limit_pullback')
+    # G-mhalf: پایهٔ اول مارکت (نصف حجم) + پایهٔ دوم limit نیم‌درصد پایین‌تر — کلید LEG1_MARKET
+    _leg1_market = (not _is_market) and bool(getattr(st, 'leg1_market', False))
     if _is_market:
         _price1, _price2 = price, None
         _size1 = round(_size, 2)
         _size2 = 0
+    elif _leg1_market:
+        _price1, _price2 = price, price * 0.995
+        _size1 = round(_size * 0.5, 2)
+        _size2 = round(_size - _size1, 2)
     else:
         # G-scale: Calculate 2 entry prices for scaling in
         _price1, _price2 = _calc_scaled_entries(sym, price, row, st)
@@ -1246,7 +1252,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     if vol <= 0:
         return
     amount = round(_size1, 2)
-    _entry_tag = 'ورود مارکت' if _is_market else 'Scale 1/2 (Fib 0.618)'
+    _entry_tag = ('ورود مارکت' if _is_market else 'Scale 1/2 (مارکت)' if _leg1_market else 'Scale 1/2 (Fib 0.618)')
     reason = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | {_entry_tag}" + _band_tag(st, row)
     if dry:
         record_trade(ws_t, 'خرید', sym, tf, reason, fmt_price(_price1), vol, amount,
@@ -1259,7 +1265,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
             vol2 = math.floor((_size2 / _price2) * 1e8) / 1e8
             if vol2 > 0:
                 amount2 = round(_size2, 2)
-                reason2 = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 2/2 (BB/2xATR)" + _band_tag(st, row)
+                reason2 = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 2/2 (-0.5%)" + _band_tag(st, row)
                 record_trade(ws_t, 'خرید', sym, tf, reason2, fmt_price(_price2), vol2, amount2,
                              sl, tp, '—', ST_DRY, 'شبیه‌سازی Scale 2/2 — بدون ارسال به صرافی')
                 led['dry_net_spent'] += amount2
@@ -1268,7 +1274,11 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
         return
     # G-scale: Use pre-calculated scaled entry price (market mode: قیمت لحظه‌ای)
     _limit_price = _price1
-    code, data = client.place_order('buy', sym, _limit_price, vol, _is_market, client_order_id=coid)
+    # G-mhalf: شفافیت — نوع هر پایه در لاگ
+    log.info('ورود %s | پایهٔ ۱: %s | پایهٔ ۲: %s', sym,
+             'مارکت' if (_is_market or _leg1_market) else 'limit',
+             'limit -0.5%' if _price2 else '—')
+    code, data = client.place_order('buy', sym, _limit_price, vol, _is_market or _leg1_market, client_order_id=coid)
     ok = code == 200 and isinstance(data, dict) and data.get('status') == 'ok'
     o = (data.get('order') or {}) if isinstance(data, dict) else {}
     oid = clean_oid(o.get('id') if isinstance(o, dict) else None or (data.get('id') if isinstance(data, dict) else ''))
@@ -1290,7 +1300,7 @@ def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
             vol2 = math.floor((_size2 / _price2) * 1e8) / 1e8
             if vol2 > 0:
                 amount2 = round(_size2, 2)
-                reason2 = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 2/2 (BB/2xATR)" + _band_tag(st, row)
+                reason2 = f"رأی خرید {a['buys']}/{a['total']} تایم‌فریم | Scale 2/2 (-0.5%)" + _band_tag(st, row)
                 # G-scale: تولید cid برای Scale 2/2 تا توسط cancel_stale_entries قابل لغو باشد
                 # الگو باید ^nbx-{sym}-{epoch9+}$ باشد تا cancel_stale_entries آن را بشناسد
                 coid2 = f"nbx-{sym.lower().replace('_', '')}-{int(time.time())}"

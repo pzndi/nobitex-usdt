@@ -310,6 +310,11 @@ class Settings:
         return str(self.trading.get('ENTRY_MODE', 'limit_pullback')).strip().lower()
 
     @property
+    def leg1_market(self):
+        """G-mhalf: پایهٔ اول Scale به‌صورت مارکت (بله/خیر) — پایهٔ دوم limit نیم‌درصد پایین‌تر"""
+        return truthy(self.trading.get('LEG1_MARKET', 'خیر'))
+
+    @property
     def pullback_pct(self):
         """G-entry: pullback percentage for limit entry."""
         return max(0.0, min(10.0, self._tnum('PULLBACK_PCT', 1.0)))
