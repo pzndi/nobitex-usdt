@@ -263,6 +263,12 @@ def _record_analysis(ws_t, sym, entry_price, exit_price, vol, pnl, pct, dur, rea
         ])
         
         log.info('تحلیل معامله %s ثبت شد: %s', sym, analysis)
+        # G-wincombo: بازمحاسبهٔ تب «ترکیب برنده» پس از هر خروج تازه
+        try:
+            import win_combo
+            win_combo.refresh_after_close(ws_t, st)
+        except Exception:
+            pass
     except Exception:
         log.exception('خطا در ثبت تحلیل معامله %s', sym)
 
@@ -784,8 +790,8 @@ def sync_order_statuses(ws_t, led, client, st=None):
                         and _tpm > 0 and abs(_fill_px / _p_sig - 1) < 0.20
                         and _p_sig > _sl_old):
                     _atr = (_p_sig - _sl_old) / _slm
-                    _sl_new = _fill_px - _slm * _atr
-                    _tp_new = _fill_px + _tpm * _atr
+                    _sl_new = _fill_px - (_p_sig - _sl_old)
+                    _tp_new = _fill_px + (_tp_old - _p_sig)
                     # G-cap2 (اپراتور 1405/08/01): TP≤0.80% ناخالص، SL≤1.00% ناخالص
                     # هدف: افزایش نرخ برد — TP نزدیک‌تر (پرشدن بیشتر)، SL بیرون نویز
                     # کارمزد واقعی نوبیتکس 0.18% (0.09% خرید + 0.09% فروش)
@@ -926,8 +932,8 @@ def sync_order_statuses(ws_t, led, client, st=None):
                     _tpm = getattr(st, 'tp_atr_mult', 0) or 0
                     if (_p_sig and _sl_old and _tp_old and _slm > 0 and _tpm > 0 and _p_sig > _sl_old):
                         _atr = (_p_sig - _sl_old) / _slm
-                        _sl_new = _fill_px - _slm * _atr
-                        _tp_new = _fill_px + _tpm * _atr
+                        _sl_new = _fill_px - (_p_sig - _sl_old)
+                        _tp_new = _fill_px + (_tp_old - _p_sig)
                         # G-cap2 (اپراتور 1405/08/01): TP≤0.88% ناخالص، SL≤1.10% ناخالص
                         # (نسخه VWAP scale-in — همان نسبت +10٪ نسبت به site1)
                         _tp_max = _fill_px * (1 + 0.88 / 100.0)
@@ -1222,6 +1228,27 @@ def _calc_scaled_entries(sym, price, row, st):
 def buy_one(st, ws_t, client, dry, sym, a, price, led, coid=None):
     row = a['best'][1]
     tf, sl, tp = row[1], row[9], row[10]
+    # G-wincombo: هندسهٔ per-symbol از تب «ترکیب برنده» — نماد حاضر → override
+    # گارد: بافر SL نسبت به fill تخمینی + حداقل RR؛ رد → هندسهٔ ردیف حفظ می‌شود.
+    # row[9]/row[10] هم به‌روز می‌شوند تا G-volsize/برچسب باند سازگار بمانند.
+    try:
+        import win_combo
+        _wcp = win_combo.get_params(ws_t, st)
+        if sym in _wcp:
+            _pull_e = _eff_pullback_pct(row, st) / 100.0
+            _buf_e = getattr(st, 'slbuf_min_pct', 0.5) / 100.0
+            _slp_e = _wcp[sym]['sl_pct'] / 100.0
+            _tpp_e = _wcp[sym]['tp_pct'] / 100.0
+            if _slp_e >= _pull_e + _buf_e and _tpp_e >= 1.2 * _slp_e:
+                sl = fmt_price(price * (1 - _slp_e))
+                tp = fmt_price(price * (1 + _tpp_e))
+                row[9], row[10] = sl, tp
+                log.info('G-wincombo %s: SL%%=%.2f TP%%=%.2f از تب ترکیب برنده', sym,
+                         _wcp[sym]['sl_pct'], _wcp[sym]['tp_pct'])
+            else:
+                log.info('G-wincombo %s: override رد شد (بافر SL یا RR) — هندسهٔ ردیف', sym)
+    except Exception:
+        pass
     # گزینهٔ الف (G-volsize): vol-targeted sizing — cap-style
     _size = _eff_order_usdt(row, st)
     # G-market-entry (اپراتور 1405/08/01): در مسیر مارکت، قیمت ورود = قیمت
@@ -1794,7 +1821,17 @@ def apply_trailing(st, ws_t, led, prices, client=None):
                 _v = se_prepare_atr(_c)
                 _atr = _v[-1] if _v and _v[-1] else None
             if _atr:
-                new_sl = price - st.trail_atr_mult * _atr
+                # G-wincombo: ضریب تریلینگ per-symbol (نمادِ فاقد تب → ضریب جهانی)
+                _tm_eff = st.trail_atr_mult
+                try:
+                    import win_combo
+                    _wct = win_combo.get_params(ws_t, st)
+                    _wcv = (_wct.get(sym) or {}).get('trail_mult')
+                    if _wcv:
+                        _tm_eff = _wcv
+                except Exception:
+                    pass
+                new_sl = price - _tm_eff * _atr
             else:
                 new_sl = price * (1 - st.trail_distance_pct / 100.0)
         else:
