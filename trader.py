@@ -795,12 +795,26 @@ def sync_order_statuses(ws_t, led, client, st=None):
                     # G-cap2 (اپراتور 1405/08/01): TP≤0.80% ناخالص، SL≤1.00% ناخالص
                     # هدف: افزایش نرخ برد — TP نزدیک‌تر (پرشدن بیشتر)، SL بیرون نویز
                     # کارمزد واقعی نوبیتکس 0.18% (0.09% خرید + 0.09% فروش)
-                    _tp_max = _fill_px * (1 + 0.80 / 100.0)
-                    _sl_min = _fill_px * (1 - 1.00 / 100.0)
-                    if _tp_new > _tp_max:
-                        _tp_new = _tp_max
-                    if _sl_new < _sl_min:
-                        _sl_new = _sl_min
+                    # G-wincombo v4 (حاکمیت تب — اجازهٔ اپراتور 1405/08/04): نماد داخل
+                    # تب «ترکیب برنده» از کپ G-cap2 عبور می‌کند؛ شیفت لنگر می‌ماند و
+                    # باند تب حول fill حفظ می‌شود. خطا/خالی → کپ (fail-open به رفتار فعلی).
+                    _wc_skip_cap = False
+                    try:
+                        import win_combo as _wc_m
+                        _wc_p = _wc_m.get_params(ws_t, st)
+                        _wc_skip_cap = bool(_wc_p and sym_c in _wc_p)
+                    except Exception:
+                        _wc_skip_cap = False
+                    if _wc_skip_cap:
+                        log.info('G-wincombo v4 %s: عبور از کپ — باند تب حول fill حفظ شد (SL=%s | TP=%s)',
+                                 sym_c, fmt_price(_sl_new), fmt_price(_tp_new))
+                    if not _wc_skip_cap:
+                        _tp_max = _fill_px * (1 + 0.80 / 100.0)
+                        _sl_min = _fill_px * (1 - 1.00 / 100.0)
+                        if _tp_new > _tp_max:
+                            _tp_new = _tp_max
+                        if _sl_new < _sl_min:
+                            _sl_new = _sl_min
                     if 0 < _sl_new < _fill_px < _tp_new:
                         r[8] = fmt_price(_sl_new)
                         r[9] = fmt_price(_tp_new)
@@ -936,12 +950,25 @@ def sync_order_statuses(ws_t, led, client, st=None):
                         _tp_new = _fill_px + (_tp_old - _p_sig)
                         # G-cap2 (اپراتور 1405/08/01): TP≤0.88% ناخالص، SL≤1.10% ناخالص
                         # (نسخه VWAP scale-in — همان نسبت +10٪ نسبت به site1)
-                        _tp_max = _fill_px * (1 + 0.88 / 100.0)
-                        _sl_min = _fill_px * (1 - 1.10 / 100.0)
-                        if _tp_new > _tp_max:
-                            _tp_new = _tp_max
-                        if _sl_new < _sl_min:
-                            _sl_new = _sl_min
+                        # G-wincombo v4 (حاکمیت تب — اجازهٔ اپراتور 1405/08/04): گارد
+                        # عبور از کپ برای نمادهای تب — همان قاعدهٔ سایت ۱ (VWAP scale-in).
+                        _wc_skip_cap = False
+                        try:
+                            import win_combo as _wc_m
+                            _wc_p = _wc_m.get_params(ws_t, st)
+                            _wc_skip_cap = bool(_wc_p and sym_c in _wc_p)
+                        except Exception:
+                            _wc_skip_cap = False
+                        if _wc_skip_cap:
+                            log.info('G-wincombo v4 %s: عبور از کپ (VWAP) — باند تب حفظ شد (SL=%s | TP=%s)',
+                                     sym_c, fmt_price(_sl_new), fmt_price(_tp_new))
+                        if not _wc_skip_cap:
+                            _tp_max = _fill_px * (1 + 0.88 / 100.0)
+                            _sl_min = _fill_px * (1 - 1.10 / 100.0)
+                            if _tp_new > _tp_max:
+                                _tp_new = _tp_max
+                            if _sl_new < _sl_min:
+                                _sl_new = _sl_min
                         if 0 < _sl_new < _fill_px < _tp_new:
                             r[8] = fmt_price(_sl_new)
                             r[9] = fmt_price(_tp_new)

@@ -30,9 +30,16 @@ def fnum(x):
 
 
 def _now():
+    """مهر تهران (G-wincombo v4): قبلاً ساعت میزبان (EDT) به‌جای تهران نوشته می‌شد."""
     try:
         import jdatetime
-        return jdatetime.datetime.now().strftime('%Y/%m/%d %H:%M')
+        import datetime as _dt
+        try:
+            from zoneinfo import ZoneInfo
+            _teh = _dt.datetime.now(ZoneInfo('Asia/Tehran')).replace(tzinfo=None)
+        except Exception:
+            _teh = _dt.datetime.utcnow() + _dt.timedelta(hours=3, minutes=30)
+        return jdatetime.datetime.fromgregorian(datetime=_teh).strftime('%Y/%m/%d %H:%M')
     except Exception:
         return time.strftime('%Y/%m/%d %H:%M', time.gmtime())
 
