@@ -842,6 +842,16 @@ def sync_order_statuses(ws_t, led, client, st=None):
                 vol_c = _xf[1]
             sell_fee_n7 = (_xf[2] if _xf else 0.0)
             entry_n7, buy_fee_n7 = _entry_fill(client, led, sym_c)
+            # G-legfifo: ورود اختصاصی همین خروج — لات‌های خریدِ مصرف‌شده تا این
+            # سطر (FIFO) به‌جای VWAP کل چرخه؛ شکست/ناهمخوانی → همان _entry_fill
+            try:
+                _lf = _leg_fifo_entry(client, led, sym_c, row_num, vol_c)
+                if _lf is not None:
+                    log.info('G-legfifo %s: ورود اختصاصی این خروج %.6g (VWAP چرخه: %s)',
+                             sym_c, _lf[0], ('%.6g' % entry_n7) if entry_n7 else chr(8212))
+                    entry_n7, buy_fee_n7 = _lf
+            except Exception:
+                log.warning('G-legfifo %s: خطا — بازگشت به VWAP چرخه', sym_c, exc_info=True)
             entry_n7 = entry_n7 or entry_c
             t_in = next((_fill_time_of(rr) for _, rr in reversed(led['rows'])
                          if rr[1].strip().upper() == sym_c and rr[2].strip() == 'خرید'
@@ -1748,6 +1758,82 @@ def _exit_fill(client, oids):
     amt = sum(f['amount'] for f in fills.values())
     fee = sum(f['fee'] for f in fills.values())
     return (px_amt / amt if amt > 0 else None, amt, fee)
+
+
+def _leg_fifo_entry(client, led, sym, exit_row_num, exit_vol):
+    """G-legfifo: (vwap, fee_usdt) ورودِ اختصاصی «همین خروج» — نه VWAP کل چرخه.
+    لات‌های خرید اجراشده (غیرشبیه‌سازی) به ترتیب دفتر push و هر فروش اجراشدهٔ
+    قبلی از جلو صف مصرف می‌کند؛ سطر خروج (exit_row_num) خودش exit_vol را مصرف
+    می‌کند و خروجی = VWAP لات‌های مصرف‌شده در همین نوبت. قیمت/کارمزد لات از
+    fillهای N7 همان سفارش (یک فراخوانی) و در غیابش از قیمت ثبت دفتر (limit
+    پرشده ≈ قیمت ثبت). شاهد ناخالص/خالص: DASH پای۱ 0.045375 → OCO 0.045355
+    (−0.044٪) و تور ایمنی 0.045614 در برابر پای۲ 0.045603 (+0.024٪) → تحمل
+    مصرف + گارد پوشش ۵۰٪. None → caller به _entry_fill برمی‌گردد (ردیف قدیمی/
+    آرشیوشده/ناهمخوان)."""
+    try:
+        lot_rows = []   # [oid, qty, px]
+        consumed = []   # (oid, take, px) — فقط نوبت سطر خروج
+        for rn, rr in (led.get('rows') or []):
+            if rn > exit_row_num:
+                break
+            if rr[1].strip().upper() != sym:
+                continue
+            rstat = rr[11].strip() if len(rr) > 11 else ''
+            if rstat not in EXECUTED or rstat == ST_DRY:
+                continue
+            rtype = rr[2].strip()
+            if rtype == 'خرید':
+                fo = clean_oid(str(rr[10]).split('|')[0])
+                if not fo or fo == chr(8212):
+                    fo = ''
+                lot_rows.append([fo, parse_price(rr[6]) or 0.0,
+                                 parse_price(rr[5]) or 0.0])
+            elif rtype == 'فروش':
+                if rn == exit_row_num:
+                    need = float(exit_vol) if exit_vol else (parse_price(rr[6]) or 0.0)
+                else:
+                    need = parse_price(rr[6]) or 0.0
+                while need > 1e-12 and lot_rows:
+                    take = min(need, lot_rows[0][1])
+                    if rn == exit_row_num and take > 1e-12:
+                        consumed.append((lot_rows[0][0], take, lot_rows[0][2]))
+                    lot_rows[0][1] -= take
+                    need -= take
+                    if lot_rows[0][1] <= 1e-12:
+                        lot_rows.pop(0)
+                if rn == exit_row_num:
+                    break
+        if not consumed:
+            return None
+        amt = sum(t2 for _, t2, _ in consumed)
+        if exit_vol and amt < 0.5 * float(exit_vol):
+            return None
+        fills = {}
+        oids = [o for o, _, _ in consumed if o]
+        if client is not None and oids:
+            try:
+                fills = _fills_for_orders(client, oids) or {}
+            except Exception:
+                fills = {}
+        cost = fee = 0.0
+        for oid, take, px in consumed:
+            f = fills.get(oid) if oid else None
+            if f:
+                try:
+                    _p = float(f['vwap']) or px
+                    _a = float(f['amount']) or 0.0
+                    _fc = float(f['fee']) or 0.0
+                    fee += _fc * _p * (take / _a if _a > 0 else 1.0)
+                    px = _p
+                except (KeyError, TypeError, ValueError):
+                    pass
+            cost += px * take
+        if amt <= 0:
+            return None
+        return cost / amt, fee
+    except Exception:
+        log.warning('G-legfifo %s: خطای ساختاری — بازگشت به VWAP چرخه', sym, exc_info=True)
+        return None
 
 
 def _entry_fill(client, led, sym):
