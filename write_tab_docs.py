@@ -33,7 +33,7 @@ TAB_DOCS = {
 👁️ خواننده: Settings.from_sheet در main.py (خط ۱۵۸) و analyze_indicators.py (خط ۱۵۷)
 ⏰ فرکانس: هر اجرای ربات از این تب می‌خواند (هر ۱ دقیقه)
 📋 دستورالعمل: ✏️ تنها تب قابل ویرایش — تغییرات از تیک بعدی اعمال می‌شود
-⚙️ پارامترها: اندیکاتورها (SMA/EMA/RSI/MACD/BB/STOCH/OBV/CCI/WPR)، threshold، INTERVAL_* (universe/backtest/signals/wallet)، SL/TP multipliers، trailing، pullback، cooldown، order_size، max_open_positions، AUTO_BLOCK
+⚙️ پارامترها: اندیکاتورها (SMA/EMA/RSI/MACD/BB/STOCH/OBV/CCI/WPR)، threshold، INTERVAL_* (universe/backtest/signals/wallet)، SL/TP multipliers، trailing، pullback، cooldown، order_size، max_open_positions
 ⚠️ توجه: تغییر اشتباه می‌تواند باعث ورود ناخواسته به معامله شود — از F9 clamp محافظت می‌شود
 🔍 منبع: main.py:5 و main.py:158""",
 
@@ -87,7 +87,7 @@ TAB_DOCS = {
 ⏰ فرکانس: هر چرخه signals (پیش‌فرض ۳-۵ دقیقه)
 📋 دستورالعمل: فقط‌خواندنی — ربات خودکار به‌روزرسانی می‌کند
 🔢 منطق: نمادهای با بیشترین آرا خرید از تب استراتژی → رتبه‌بندی → کاندید برتر
-🛡️ گاردهای ورود: ۱۹ گارد (سقف پوزیشن، same-cycle، cooldown، TTL، G-volsize, G-bandcap, G-global, G-premium, G-mark-dev, momentum, knife, AUTO_BLOCK, G-maxsl, موجودی، ...)
+🛡️ گاردهای ورود: ۱۹ گارد (سقف پوزیشن، same-cycle، cooldown، TTL، G-volsize, G-bandcap, G-global, G-premium, G-mark-dev, momentum, knife, G-maxsl, موجودی، ...)
 🎯 خروجی: یک کاندید برتر برای buy_one (در صورت عبور از همه گاردها)
 🔍 منبع: trader.py:62 RANKING_TAB = 'معاملات'""",
 

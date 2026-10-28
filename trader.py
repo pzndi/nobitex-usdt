@@ -2732,7 +2732,6 @@ GUARDS_DEFS = [
     ('PUMP_GUARD_PCT',       'momentum exhaustion',          'pump_guard_pct'),
     ('LOSS_STREAK_LIMIT',    'losing exits in last',         'loss_streak_limit'),
     ('TREND_FILTER_ENABLED', 'market regime bearish',        'trend_filter_enabled'),
-    ('BLOCKED_SYMBOLS',      'symbol blocked',               True),
     ('MIN_USDT_BALANCE',     'موجودی USDT کافی نیست',        True),
     ('ENTRY_TTL_MIN',        'سفارش ورود کهنه لغو شد',       True),
     ('RISK_TARGET_USDT',     'G-volsize',                     True),
@@ -2755,7 +2754,6 @@ GUARDS_DUTY = {
     'PUMP_GUARD_PCT': 'رد ورود اگر قیمت بیش از 5٪ بالاتر از SMA20(1h) باشد (اشباع خرید)',
     'LOSS_STREAK_LIMIT': 'صبر بعد از N خروج زیان‌ده در پنجره زمانی (جلوگیری از سقوط روی چاقو)',
     'TREND_FILTER_ENABLED': 'مسدود کردن همه خریدها وقتی BTC نزولی است (SMA20<SMA50)',
-    'BLOCKED_SYMBOLS': 'مسدود کردن نمادهای زیان‌ده (هر 48 ساعت چرخه)',
     'MIN_USDT_BALANCE': 'رد ورود اگر موجودی USDT کافی نباشد',
     'ENTRY_TTL_MIN': 'لغو سفارش limit کهنه اگر پس از 60 دقیقه پر نشود',
     'RISK_TARGET_USDT': 'برابرسازی ریسک دلاری هر معامله (cap $0.50)',
@@ -3024,74 +3022,6 @@ def archive_orders(sh, st, led=None, threshold=300, max_age_days=7):
         return 0
 
 
-def auto_block_update(sh, st):
-    """G-ablock: every 48h, compute worst 5 symbols from closed trades
-    (last 14 days, min 3 trades) and write to BLOCKED_SYMBOLS in the sheet.
-    Symbols in FREE_SYMBOLS are never auto-blocked. Display + guard only."""
-    import jdatetime as _jd
-    import datetime as _dt
-    from collections import defaultdict
-    try:
-        ws_set = sh.worksheet('تنظیمات')
-        ws_closed = sh.worksheet(CLOSED_TAB)
-        rows_c = ws_closed.get_all_values()
-
-        cutoff = (_dt.datetime.now(_dt.timezone.utc)
-                  + _dt.timedelta(hours=3, minutes=30)
-                  - _dt.timedelta(days=14)).replace(tzinfo=None)
-        cutoff_j = _jd.datetime.fromgregorian(datetime=cutoff)
-
-        stats = defaultdict(lambda: {'n': 0, 'pnl': 0.0})
-        for r in rows_c:
-            if len(r) < 8 or not str(r[1]).strip():
-                continue
-            try:
-                t0 = _jd.datetime.strptime(str(r[0]).strip(), '%Y/%m/%d %H:%M')
-                pnl = float(str(r[6]).replace(',', ''))
-            except (ValueError, TypeError):
-                continue
-            if t0 < cutoff_j:
-                continue
-            sym = str(r[1]).strip().upper()
-            stats[sym]['n'] += 1
-            stats[sym]['pnl'] += pnl
-
-        free = st.free_symbols
-        eligible = [(sym, s) for sym, s in stats.items()
-                    if s['n'] >= 3 and sym not in free]
-        eligible.sort(key=lambda kv: kv[1]['pnl'])  # بدترین (کمترین PnL) اول
-        worst5 = [sym for sym, s_ in eligible[:5] if s_['pnl'] < 0]
-
-        # نوشتن در شیت (key-based)
-        vals = ws_set.get_all_values()
-        for i, r in enumerate(vals, 1):
-            if str(r[0]).strip() == 'BLOCKED_SYMBOLS':
-                ws_set.update_acell('B%d' % i, ','.join(worst5) if worst5 else '')
-                break
-        else:
-            # درج در اولین ردیف خالی بخش معاملات
-            target = None
-            for i in range(31, len(vals) + 2):
-                if i > len(vals) or not any(str(c).strip() for c in vals[i-1]):
-                    target = i
-                    break
-            if target:
-                ws_set.update(values=[['BLOCKED_SYMBOLS',
-                                       ','.join(worst5) if worst5 else '',
-                                       '(خودکار G-ablock) بدترین ۵ نماد ۱۴ روز اخیر - قابل ویرایش']],
-                              range_name='A%d:C%d' % (target, target))
-
-        if worst5:
-            log.info('AUTO_BLOCK: blocked %d symbols: %s',
-                     len(worst5), ', '.join(worst5))
-        else:
-            log.info('AUTO_BLOCK: no symbols qualify for blocking')
-        return worst5
-    except Exception:
-        log.exception('AUTO_BLOCK update failed')
-        return []
-
-
 def _sl_buffer_skip(a, st):
     # G-slbuf (بهبود ۱): (skip, buf, fill_est) — آیا ورود به‌خاطر بافر SL ریز رد شود؟
     # بافر = فاصلهٔ SL از قیمت fill تخمینی (limit_pullback: سیگنال×(1−پولبک) —
@@ -3313,10 +3243,6 @@ def run(sh, st, rows, state=None):
         if st.trend_filter_enabled and getattr(run, '_btc_bearish', False):
             if sym == list(cands)[0]:  # log once per cycle
                 log.info('skip buy %s: market regime bearish (BTC 4h SMA20<SMA50)', sym)
-            continue
-        # G-ablock: operator/auto blocked symbols - no new entries
-        if sym in st.blocked_symbols:
-            log.info('skip buy %s: symbol blocked (BLOCKED_SYMBOLS)', sym)
             continue
         if dry:
             bal = st.dry_start_usdt - led['dry_net_spent']

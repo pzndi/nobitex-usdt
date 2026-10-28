@@ -14,10 +14,10 @@ TRADING_KEYS = {'TRADING_ENABLED', 'DRY_RUN', 'MAX_DAILY_TRADES', 'ORDER_TYPE',
                 'ORDER_SIZE_USDT', 'MAX_OPEN_POSITIONS', 'MIN_USDT_BALANCE', 'DRY_START_USDT',
                 'SL_ATR_MULT', 'TP_ATR_MULT', 'USE_EXCHANGE_OCO',
                 'TRAIL_ENABLED', 'TRAIL_ACTIVATION_PCT', 'TRAIL_DISTANCE_PCT', 'DUST_USDT',
-                'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN', 'PUMP_GUARD_PCT', 'LOSS_STREAK_LIMIT', 'LOSS_STREAK_WINDOW_H', 'USE_BT_PARAMS', 'BLOCKED_SYMBOLS', 'FREE_SYMBOLS', 'MAX_SL_MULT', 'TREND_FILTER_ENABLED', 'TRAIL_ATR_MULT', 'PARTIAL_EXIT_PCT', 'PARTIAL_EXIT_TRIGGER', 'ENTRY_MODE', 'PULLBACK_PCT', 'SLBUF_MIN_PCT', 'POSITION_TIMEOUT_H', 'POSITION_TIMEOUT_MIN_PCT', 'MAX_SL_BAND_PCT', 'MIN_TFS', 'MIN_TFS_SELL', 'LEG1_MARKET', 'WIN_COMBO_ENABLED'}
+                'ORDER_FAIL_COOLDOWN_MIN', 'EXIT_ORDER_TYPE', 'ENTRY_TTL_MIN', 'REENTRY_COOLDOWN_MIN', 'PUMP_GUARD_PCT', 'LOSS_STREAK_LIMIT', 'LOSS_STREAK_WINDOW_H', 'USE_BT_PARAMS', 'MAX_SL_MULT', 'TREND_FILTER_ENABLED', 'TRAIL_ATR_MULT', 'PARTIAL_EXIT_PCT', 'PARTIAL_EXIT_TRIGGER', 'ENTRY_MODE', 'PULLBACK_PCT', 'SLBUF_MIN_PCT', 'POSITION_TIMEOUT_H', 'POSITION_TIMEOUT_MIN_PCT', 'MAX_SL_BAND_PCT', 'MIN_TFS', 'MIN_TFS_SELL', 'LEG1_MARKET', 'WIN_COMBO_ENABLED'}
 GENERAL_KEYS = {'TOP_N', 'MIN_VOLUME_USDT', 'SIGNAL_THRESHOLD_PCT', 'CANDLE_LOOKBACK',
                    'INTERVAL_UNIVERSE_MIN', 'INTERVAL_SIGNALS_MIN', 'INTERVAL_BACKTEST_MIN',
-                   'INTERVAL_WALLET_MIN', 'INTERVAL_GUARDS_MIN', 'INTERVAL_AUTO_BLOCK_MIN', 'INTERVAL_ARCHIVE_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME', 'BT_OPTIMIZE_THRESHOLD', 'BT_THRESHOLD_GRID', 'BT_SL_MULTS', 'BT_TP_MULTS', 'BT_MIN_TRADES', 'BT_MIN_TEST_TRADES', 'BT_HOLDOUT_PCT', 'BT_FEE_RT_PCT', 'BT_SL_SLIP_PCT', 'BT_WARMUP', 'BT_LOOKBACK'}
+                   'INTERVAL_WALLET_MIN', 'INTERVAL_GUARDS_MIN', 'INTERVAL_ARCHIVE_MIN', 'BACKTEST_TIMEFRAME', 'SLTP_TIMEFRAME', 'BT_OPTIMIZE_THRESHOLD', 'BT_THRESHOLD_GRID', 'BT_SL_MULTS', 'BT_TP_MULTS', 'BT_MIN_TRADES', 'BT_MIN_TEST_TRADES', 'BT_HOLDOUT_PCT', 'BT_FEE_RT_PCT', 'BT_SL_SLIP_PCT', 'BT_WARMUP', 'BT_LOOKBACK'}
 
 RES_FALLBACK = {'1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '3h': '180',
                 '4h': '240', '6h': '360', '12h': '720', '1D': '1D', '2D': '2D', '3D': '3D'}
@@ -39,12 +39,12 @@ DEFAULT_TRADING = {'TRADING_ENABLED': 'خیر', 'DRY_RUN': 'بله', 'MAX_DAILY_
                    'ORDER_TYPE': 'market', 'ORDER_SIZE_USDT': '50',
                    'MAX_OPEN_POSITIONS': '3', 'MIN_USDT_BALANCE': '20',
                    'DRY_START_USDT': '1000', 'SL_ATR_MULT': '2.0', 'TP_ATR_MULT': '3.0', 'USE_EXCHANGE_OCO': 'خیر',
-                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله', 'BLOCKED_SYMBOLS': '', 'FREE_SYMBOLS': '', 'MAX_SL_MULT': '1.5', 'TREND_FILTER_ENABLED': 'بله', 'TRAIL_ATR_MULT': '0.5', 'PARTIAL_EXIT_PCT': '50', 'PARTIAL_EXIT_TRIGGER': '2.0', 'ENTRY_MODE': 'limit_pullback', 'PULLBACK_PCT': '1.0', 'SLBUF_MIN_PCT': '0.5', 'POSITION_TIMEOUT_H': '48', 'POSITION_TIMEOUT_MIN_PCT': '0', 'MAX_SL_BAND_PCT': '8.0', 'MIN_TFS': '3', 'MIN_TFS_SELL': '3', 'WIN_COMBO_ENABLED': 'بله'}
+                   'TRAIL_ENABLED': 'بله', 'TRAIL_ACTIVATION_PCT': '1.0', 'TRAIL_DISTANCE_PCT': '2.0', 'DUST_USDT': '0.5', 'ORDER_FAIL_COOLDOWN_MIN': '30', 'EXIT_ORDER_TYPE': 'market', 'ENTRY_TTL_MIN': '60', 'REENTRY_COOLDOWN_MIN': '30', 'PUMP_GUARD_PCT': '8', 'LOSS_STREAK_LIMIT': '2', 'LOSS_STREAK_WINDOW_H': '12', 'USE_BT_PARAMS': 'بله', 'MAX_SL_MULT': '1.5', 'TREND_FILTER_ENABLED': 'بله', 'TRAIL_ATR_MULT': '0.5', 'PARTIAL_EXIT_PCT': '50', 'PARTIAL_EXIT_TRIGGER': '2.0', 'ENTRY_MODE': 'limit_pullback', 'PULLBACK_PCT': '1.0', 'SLBUF_MIN_PCT': '0.5', 'POSITION_TIMEOUT_H': '48', 'POSITION_TIMEOUT_MIN_PCT': '0', 'MAX_SL_BAND_PCT': '8.0', 'MIN_TFS': '3', 'MIN_TFS_SELL': '3', 'WIN_COMBO_ENABLED': 'بله'}
 DEFAULT_GENERAL = {'TOP_N': '10', 'MIN_VOLUME_USDT': '100000',
                    'SIGNAL_THRESHOLD_PCT': '70', 'CANDLE_LOOKBACK': '300',
                    'INTERVAL_UNIVERSE_MIN': '120', 'INTERVAL_SIGNALS_MIN': '5',
                    'INTERVAL_BACKTEST_MIN': '30', 'INTERVAL_WALLET_MIN': '30',
-                  'INTERVAL_GUARDS_MIN': '5', 'INTERVAL_AUTO_BLOCK_MIN': '2880', 'INTERVAL_ARCHIVE_MIN': '1440',
+                  'INTERVAL_GUARDS_MIN': '5', 'INTERVAL_ARCHIVE_MIN': '1440',
                    'BACKTEST_TIMEFRAME': '1D', 'SLTP_TIMEFRAME': '1h', 'BT_OPTIMIZE_THRESHOLD': 'خیر', 'BT_THRESHOLD_GRID': '60;70;80', 'BT_SL_MULTS': '1.5;2.0;2.5', 'BT_TP_MULTS': '2.0;3.0;4.0', 'BT_MIN_TRADES': '8', 'BT_MIN_TEST_TRADES': '2', 'BT_HOLDOUT_PCT': '30', 'BT_FEE_RT_PCT': '0.25', 'BT_SL_SLIP_PCT': '0.35', 'BT_WARMUP': '60', 'BT_LOOKBACK': '480'}
 
 
@@ -127,7 +127,6 @@ PARAM_RANGES = {
     'INTERVAL_BACKTEST_MIN':   (5, 1440),
     'INTERVAL_WALLET_MIN':     (1, 1440),
     'INTERVAL_GUARDS_MIN':     (1, 1440),
-    'INTERVAL_AUTO_BLOCK_MIN': (60, 10080),
     'INTERVAL_ARCHIVE_MIN':    (60, 10080),
     'BT_MIN_TRADES':         (0, 200),
     'BT_MIN_TEST_TRADES':    (0, 100),
@@ -246,20 +245,6 @@ class Settings:
         no = sheet params (SL/TP/threshold) rule ALL symbols; backtest tab
         stays informational."""
         return truthy(self.trading.get('USE_BT_PARAMS', 'بله'))
-
-    @property
-    def blocked_symbols(self):
-        """G-ablock: symbols blocked from buying (comma-separated, uppercase).
-        Auto-populated every 48h from closed-trade stats; operator can
-        remove entries manually (they move to FREE_SYMBOLS)."""
-        raw = str(self.trading.get('BLOCKED_SYMBOLS') or '')
-        return {s.strip().upper() for s in raw.split(',') if s.strip()}
-
-    @property
-    def free_symbols(self):
-        """G-ablock: symbols explicitly freed by operator - never auto-blocked."""
-        raw = str(self.trading.get('FREE_SYMBOLS') or '')
-        return {s.strip().upper() for s in raw.split(',') if s.strip()}
 
     @property
     def max_sl_mult(self):
@@ -433,11 +418,6 @@ class Settings:
     @property
     def interval_guards_min(self):
         return self._interval('INTERVAL_GUARDS_MIN', 5)
-
-    @property
-    def interval_auto_block_min(self):
-        """P3: فاصلهٔ چرخهٔ بلاک خودکار نمادها (دقیقه) — پیش‌فرض 2880 = 48 ساعت"""
-        return self._interval('INTERVAL_AUTO_BLOCK_MIN', 2880)
 
     @property
     def interval_archive_min(self):
