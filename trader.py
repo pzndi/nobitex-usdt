@@ -1762,9 +1762,16 @@ def _exit_fill(client, oids):
 
 def _leg_fifo_entry(client, led, sym, exit_row_num, exit_vol):
     """G-legfifo: (vwap, fee_usdt) ورودِ اختصاصی «همین خروج» — نه VWAP کل چرخه.
-    لات‌های خرید اجراشده (غیرشبیه‌سازی) به ترتیب دفتر push و هر فروش اجراشدهٔ
-    قبلی از جلو صف مصرف می‌کند؛ سطر خروج (exit_row_num) خودش exit_vol را مصرف
-    می‌کند و خروجی = VWAP لات‌های مصرف‌شده در همین نوبت. قیمت/کارمزد لات از
+    v2 (r90): صف فقط از مرز چرخه بازسازی می‌شود — آخرین فروش اجراشدهٔ پیش از
+    سطر خروج (هم‌مرزِ G-fix-cycle در _entry_fill). ریشهٔ v2: صفِ سراسری حبابِ
+    کاغذی بین‌چرخه‌ای می‌ساخت — بقایای ناخالصِ ثبت در برابر خالصِ فروخته +
+    پرشدن جزئیِ نامرئی، جلوِ صف می‌ماندند (شاهد NEAR: ~0.035 @ 4.6885 از
+    چرخهٔ 09:26 = 6.7٪ وزنِ خروج 07:06 → 4.72158 به‌جای ~4.723). لات‌های خرید
+    اجراشده (غیرشبیه‌سازی) پس از مرز به ترتیب دفتر push و سطر خروج
+    (exit_row_num) خودش exit_vol را مصرف می‌کند و خروجی = VWAP لات‌های
+    مصرف‌شده در همین نوبت. خروجِ دومی پس از خریدِ جدید به لات‌های بعد از
+    خروجِ اول منتسب می‌شود (شاهد DASH: 55.096 / 54.82)؛ خروجِ بدون لات پس از
+    مرز → None → fallback به _entry_fill. قیمت/کارمزد لات از
     fillهای N7 همان سفارش (یک فراخوانی) و در غیابش از قیمت ثبت دفتر (limit
     پرشده ≈ قیمت ثبت). شاهد ناخالص/خالص: DASH پای۱ 0.045375 → OCO 0.045355
     (−0.044٪) و تور ایمنی 0.045614 در برابر پای۲ 0.045603 (+0.024٪) → تحمل
@@ -1773,9 +1780,23 @@ def _leg_fifo_entry(client, led, sym, exit_row_num, exit_vol):
     try:
         lot_rows = []   # [oid, qty, px]
         consumed = []   # (oid, take, px) — فقط نوبت سطر خروج
+        # G-legfifo v2: مرز صف = آخرین فروش اجراشدهٔ پیش از سطر خروج (هم‌مرزِ
+        # G-fix-cycle در _entry_fill) — صفِ سراسری حبابِ بین‌چرخه‌ای می‌ساخت
+        # (شاهد NEAR: ~0.035 @ 4.6885 از چرخهٔ 09:26 = 6.7٪ وزنِ خروج 07:06).
+        cycle_start = 0
+        for _rn, _rr in (led.get('rows') or []):
+            if _rn >= exit_row_num:
+                break
+            if _rr[1].strip().upper() != sym:
+                continue
+            _rs = _rr[11].strip() if len(_rr) > 11 else ''
+            if _rs in EXECUTED and _rs != ST_DRY and _rr[2].strip() == 'فروش':
+                cycle_start = _rn
         for rn, rr in (led.get('rows') or []):
             if rn > exit_row_num:
                 break
+            if rn <= cycle_start:
+                continue
             if rr[1].strip().upper() != sym:
                 continue
             rstat = rr[11].strip() if len(rr) > 11 else ''
