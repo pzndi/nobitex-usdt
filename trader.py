@@ -2422,6 +2422,25 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
         pass
 
 
+def _exit_time_of(rr):
+    """G-cool-fix: زمان واقعی خروج از ردیف فروش — مهر « @%Y/%m/%d %H:%M» در rr[12]
+    (زمان پرشدن OCO/فروش). fallback به rr[0] (ردیف‌های جبران که rr[0]=زمان خروج است،
+    یا مهر @ خراب/غیرتاریخ). هیچ‌کدام → None."""
+    try:
+        import jdatetime as _jd
+        msg = str(rr[12]) if len(rr) > 12 else ''
+        if ' @' in msg:
+            try:
+                return _jd.datetime.strptime(
+                    msg.split(' @')[-1].strip(), '%Y/%m/%d %H:%M').togregorian()
+            except ValueError:
+                pass
+        return _jd.datetime.strptime(
+            str(rr[0]).strip(), '%Y/%m/%d %H:%M').togregorian()
+    except Exception:
+        return None
+
+
 def recent_losing_exit(led, sym, minutes):
     """آیا این نماد در N دقیقه اخیر خروج زیان‌ده داشته؟ (کول‌داون ورود مجدد)
     معیار: ردیف فروش «پر شد» با P&L منفی در پیام، یا دلیل «حد ضرر»"""
@@ -2443,15 +2462,12 @@ def recent_losing_exit(led, sym, minutes):
                 is_loss = (pnl is not None and pnl < 0) or ('حد ضرر' in reason)
                 if not is_loss:
                     continue
-                try:
-                    t0 = _jd.datetime.strptime(str(rr[0]).strip(), '%Y/%m/%d %H:%M')
-                    g = t0.togregorian()
-                    if (now - g).total_seconds() < minutes * 60:
-                        return True
-                except Exception:
-                    continue
+                # G-cool-fix: شمارش از لحظهٔ خروج واقعی (مهر @ در rr[12])، نه ثبت سفارش فروش
+                g = _exit_time_of(rr)
+                if g is not None and (now - g).total_seconds() < minutes * 60:
+                    return True
     except Exception:
-        pass
+        log.warning('recent_losing_exit(%s): خطای ساختاری — کول‌داون fail-open', sym, exc_info=True)
     return False
 
 
@@ -2480,17 +2496,13 @@ def losing_exits_count(led, sym, minutes, now_ref=None):
                         pnl = None
                 if not ((pnl is not None and pnl < 0) or 'حد ضرر' in str(rr[4])):
                     continue
-                t_str = None
-                if ' @' in msg:
-                    t_str = msg.split(' @')[-1].strip()
-                try:
-                    t0 = _jd.datetime.strptime(t_str or str(rr[0]).strip(), '%Y/%m/%d %H:%M')
-                    if (now - t0.togregorian()).total_seconds() < minutes * 60:
-                        n += 1
-                except Exception:
-                    continue
+                # G-cool-fix: هم‌راستا با recent_losing_exit — helper مشترک + fallback امن برای @ خراب
+                g = _exit_time_of(rr)
+                if g is not None and (now - g).total_seconds() < minutes * 60:
+                    n += 1
         return n
     except Exception:
+        log.warning('losing_exits_count(%s): خطای ساختاری — fail-open به 0', sym, exc_info=True)
         return 0
 
 
