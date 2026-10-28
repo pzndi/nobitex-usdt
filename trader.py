@@ -926,6 +926,26 @@ def sync_order_statuses(ws_t, led, client, st=None):
                         continue
                     for _rn in _tgt_rows:
                         ws_t.update_cell(_rn, 12, ST_CANCELLED)
+                    # F10b (r110): ردیف‌های OCOی ثبت‌شده پس از snapshot تیک در
+                    # led['rows'] نیستند («ردیف‌ها: —»؛ شاهد BLUR 11:33) — اسکن
+                    # هدفمند ستون شناسه و مهر لغو روی هر ردیف OPENISH حاوی oid لغوشده.
+                    if not _tgt_rows:
+                        try:
+                            _col_oid = ws_t.col_values(11)
+                            _col_st = ws_t.col_values(12)
+                            _stamped = 0
+                            for _i in range(3, len(_col_oid)):
+                                _oval = str(_col_oid[_i] or '')
+                                if not any(_x in _oval for _x in _tgt):
+                                    continue
+                                _st_old = str(_col_st[_i]) if _i < len(_col_st) else ''
+                                if _st_old.strip() in OPENISH:
+                                    ws_t.update_cell(_i + 1, 12, ST_CANCELLED)
+                                    _stamped += 1
+                            if _stamped:
+                                log.info('G-scale %s: %d ردیف OCOی لغوشده (ثبت‌شده پس از snapshot) مهر لغو خورد', sym_c, _stamped)
+                        except Exception:
+                            log.exception('G-scale %s: مهر لغوی ردیف‌های پس از snapshot ناموفق', sym_c)
                     # G-log (P4): لغوی موفق تا حالا بی‌صدا بود (شاهد: ردیف 698
                     # ساعت 20:49). یک خط INFO برای ردگیری.
                     log.info('G-scale %s: لغو %d لگ OCO انجام شد (ردیف‌ها: %s)',
@@ -2464,10 +2484,26 @@ def reconcile_real_positions(st, ws_t, client, led, prices):
         avail = currency_available(client, sym, use_active=False)
         if avail is None or avail >= rv * 0.5:
             continue
+        # G-recon-guard (r110): اگر سفارش فروش زنده‌ای برای نماد روی صرافی
+        # هست، خروج جزئی در جریان است (ریشهٔ ⑦: BLUR 11:33 — SL نیمه‌پر
+        # 537.107/594.94؛ reconcile بست و sync دوباره بست). بستنِ چرخه تا
+        # لغو/اجرای کامل سفارش‌های فروش به همگام‌سازی وضعیت واگذار می‌شود.
+        try:
+            _oo_code, _oo_data = client.open_orders()
+            _oo_live = [o for o in ((_oo_data or {}).get('orders') or [])
+                        if str(o.get('type')) == 'sell'
+                        and _norm_sym(o.get('srcCurrency', '')) == _norm_sym(sym)]
+        except Exception as _oo_e:
+            log.warning('reconcile %s: استعلام سفارش‌های باز ناموفق (%r) — بستن به تیک بعد واگذار شد', sym, _oo_e)
+            continue
+        if _oo_live:
+            log.info('reconcile %s: کیف کمتر از نصف دفتر اما %d سفارش فروش زنده روی صرافی هست — خروج جزئی در جریان، بستن به همگام‌سازی واگذار شد',
+                     sym, len(_oo_live))
+            continue
         price = prices.get(sym) or _public_price(sym) or p.get('entry_price') or 0.0
         sold = max(rv - avail, 0.0)
         marked_row = None
-        for row_num, rr in led['rows']:
+        for row_num, rr in reversed(led['rows'] or []):
             if (rr[1].strip().upper() == sym and rr[2].strip() == 'فروش'
                     and rr[11].strip() in OPENISH):
                 ws_t.update_cell(row_num, 12, ST_FILLED)
