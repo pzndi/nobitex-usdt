@@ -809,7 +809,7 @@ def sync_order_statuses(ws_t, led, client, st=None):
                         log.info('G-wincombo v4 %s: عبور از کپ — باند تب حول fill حفظ شد (SL=%s | TP=%s)',
                                  sym_c, fmt_price(_sl_new), fmt_price(_tp_new))
                     if not _wc_skip_cap:
-                        _tp_max = _fill_px * (1 + 0.80 / 100.0)
+                        _tp_max = _fill_px * (1 + 1.50 / 100.0)
                         _sl_min = _fill_px * (1 - 1.00 / 100.0)
                         if _tp_new > _tp_max:
                             _tp_new = _tp_max
@@ -993,7 +993,7 @@ def sync_order_statuses(ws_t, led, client, st=None):
                             log.info('G-wincombo v4 %s: عبور از کپ (VWAP) — باند تب حفظ شد (SL=%s | TP=%s)',
                                      sym_c, fmt_price(_sl_new), fmt_price(_tp_new))
                         if not _wc_skip_cap:
-                            _tp_max = _fill_px * (1 + 0.88 / 100.0)
+                            _tp_max = _fill_px * (1 + 1.65 / 100.0)
                             _sl_min = _fill_px * (1 - 1.10 / 100.0)
                             if _tp_new > _tp_max:
                                 _tp_new = _tp_max
@@ -1583,6 +1583,41 @@ def check_position_timeout(st, ws_t, client, dry, led, prices):
         if pnl_pct < st.position_timeout_min_pct:
             log.info('G-timeout: %s held %.1fh with P&L %+.1f%% (min %.1f%%) - selling',
                      sym, age_h, pnl_pct, st.position_timeout_min_pct)
+            # P6 (r178): خروج اجباری G-timeout — لغو OCO زنده تا فروش مارکت ممکن شود (کلید: TIMEOUT_FORCE_EXIT)
+            try:
+                _p6_on = str(load_env('.env').get('TIMEOUT_FORCE_EXIT', '1') or '1').strip().lower() not in ('0', 'no', 'خیر', 'false', 'off')
+            except Exception:
+                _p6_on = True
+            if _p6_on:
+                try:
+                    _tgt_p6 = [x for x in (_oco_placed_run.get(sym) or []) if x]
+                    _rows_p6 = []
+                    for _rn_p6, _rr_p6 in (led.get('rows') or []):
+                        if (_rr_p6[1].strip().upper() == sym and 'OCO' in str(_rr_p6[4])
+                            and _rr_p6[11].strip() in OPENISH):
+                            _oids_p6 = [clean_oid(x) for x in str(_rr_p6[10]).split('|')]
+                            _tgt_p6.extend(x for x in _oids_p6 if x and x != chr(8212))
+                            _rows_p6.append(_rn_p6)
+                    _tgt_p6 = list(dict.fromkeys(_tgt_p6))
+                    if _tgt_p6:
+                        for _oid_p6 in _tgt_p6:
+                            try:
+                                _cc_p6, _cd_p6 = client.cancel_order(_oid_p6)
+                                _ok_p6 = (_cc_p6 == 200 and (not isinstance(_cd_p6, dict)
+                                          or _cd_p6.get('status') != 'failed'))
+                                if not _ok_p6 and isinstance(_cd_p6, dict) and str(_cd_p6.get('error')) == 'NotFound':
+                                    _ok_p6 = True
+                                log.info('P6 %s: لغو OCO %s → %s', sym, _oid_p6, 'OK' if _ok_p6 else 'ناموفق')
+                            except Exception:
+                                pass
+                        for _rn_p6 in _rows_p6:
+                            try:
+                                ws_t.update_cell(_rn_p6, 12, ST_CANCELLED)
+                            except Exception:
+                                pass
+                    _oco_placed_run.pop(sym, None)
+                except Exception:
+                    pass
             exit_position(st, ws_t, client, sym,
                           'انقضای مدت (%.0fh)' % st.position_timeout_h,
                           px, led)
@@ -2658,6 +2693,55 @@ def recent_losing_exit(led, sym, minutes):
     return False
 
 
+def global_fuse_until(led, limit=3, window_min=15, cooldown_min=60, now_ref=None):
+    """P3 (r176): فیوز سراسری ضد-خوشهٔ باخت — اگر «limit» خروج زیان‌ده (هر نمادی)
+    در بازهٔ window_min دقیقه رخ دهد، خرید همهٔ نمادها تا پایان cooldown از آخرین
+    خروجِ آن خوشه مسدود می‌ماند. همان منطق losing_exits_count ولی سراسری و
+    کاملاً مشتق از ردیف‌های دفتر (فرایندهای کوتاه‌عمر state را حفظ نمی‌کنند).
+    خروجی: datetime پایان فیوز (تهران) اگر فعال، وگرنه None. fail-open."""
+    try:
+        if limit <= 0 or window_min <= 0 or not isinstance(led, dict):
+            return None
+        import datetime as _dt
+        now = now_ref or (_dt.datetime.now(_dt.timezone.utc)
+                          + _dt.timedelta(hours=3, minutes=30)).replace(tzinfo=None)
+        horizon = window_min + max(cooldown_min, 0) + 5
+        ts = []
+        for _, rr in led.get('rows', []):
+            try:
+                if rr[2].strip() != 'فروش' or rr[11].strip() not in EXECUTED:
+                    continue
+                msg = str(rr[12])
+                pnl = None
+                if 'P&L:' in msg:
+                    try:
+                        pnl = float(msg.split('P&L:')[1].strip().split()[0])
+                    except (ValueError, IndexError):
+                        pnl = None
+                if not ((pnl is not None and pnl < 0) or 'حد ضرر' in str(rr[4])):
+                    continue
+                t = _exit_time_of(rr)
+                if t is None or t > now:
+                    continue
+                if (now - t).total_seconds() <= horizon * 60:
+                    ts.append(t)
+            except Exception:
+                continue
+        if len(ts) < limit:
+            return None
+        ts.sort()
+        best = None
+        for i in range(limit - 1, len(ts)):
+            if (ts[i] - ts[i - limit + 1]).total_seconds() <= window_min * 60:
+                best = ts[i]
+        if best is None:
+            return None
+        until = best + _dt.timedelta(minutes=max(cooldown_min, 0))
+        return until if now < until else None
+    except Exception:
+        return None
+
+
 def losing_exits_count(led, sym, minutes, now_ref=None):
     """G3.2 anti-knife: count losing exits of sym within last N minutes
     (P&L stamp from Fix-B, or stop-loss reason). A symbol that keeps losing
@@ -3349,6 +3433,42 @@ def run(sh, st, rows, state=None):
                        if (p.get('real_volume') or 0) > 1e-12)
     _pump_sma_cache = {}
     for sym in cands:
+        # --- r176: P0 لیست سیاه + P2 شب تهران + P3 فیوز سراسری (fail-open) ---
+        try:
+            if str(sym).upper() in (getattr(st, 'symbol_blacklist', None) or []):
+                log.info('خرید %s مسدود شد: نماد در لیست سیاه (P0)', sym)
+                continue
+        except Exception:
+            pass
+        try:
+            import datetime as _dt_g
+            _ns_g = int(getattr(st, 'night_block_start_h', 0) or 0)
+            _ne_g = int(getattr(st, 'night_block_end_h', 7) or 0)
+            if _ns_g != _ne_g:
+                _h_g = _dt_g.datetime.now(_dt_g.timezone(_dt_g.timedelta(hours=3, minutes=30))).hour
+                _nb_g = (_ns_g <= _h_g < _ne_g) if _ns_g < _ne_g else (_h_g >= _ns_g or _h_g < _ne_g)
+                if _nb_g:
+                    log.info('خرید %s مسدود شد: پنجرهٔ شب تهران (P2)', sym)
+                    continue
+        except Exception:
+            pass
+        try:
+            _fl_g = int(getattr(st, 'global_fuse_limit', 3) or 0)
+            if _fl_g > 0 and isinstance(led, dict) and led.get('rows'):
+                _fu_g = global_fuse_until(led, _fl_g, int(getattr(st, 'global_fuse_window_min', 15) or 15), int(getattr(st, 'global_fuse_cooldown_min', 60) or 60))
+                if _fu_g is not None:
+                    try:
+                        import datetime as _dt_g3
+                        _nw_g = _dt_g3.datetime.now()
+                        _ll_g = led.get('_p3_last_log')
+                        if _ll_g is None or (_nw_g - _ll_g).total_seconds() > 300:
+                            led['_p3_last_log'] = _nw_g
+                            log.warning('فیوز سراسری P3 فعال — خرید همهٔ نمادها تا %s مسدود', _fu_g.strftime('%H:%M'))
+                    except Exception:
+                        pass
+                    continue
+        except Exception:
+            pass
         a = agg[sym]
         if led['daily_count'] >= st.max_daily_trades:
             log.info('خرید %s انجام نشد: سقف معاملات روزانه (%d)', sym, st.max_daily_trades)

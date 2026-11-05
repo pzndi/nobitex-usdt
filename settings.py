@@ -335,6 +335,47 @@ class Settings:
         return min(10, max(0, int(self._tnum('LOSS_STREAK_LIMIT', 2))))
 
     @property
+    def symbol_blacklist(self):
+        """P0 (r176): نمادهای ممنوع خرید — کلید SYMBOL_BLACKLIST در .env (جداکننده , یا ;)"""
+        try:
+            _raw = ''
+            try:
+                _raw = str(load_env('.env').get('SYMBOL_BLACKLIST', '') or '')
+            except Exception:
+                _raw = ''
+            if not _raw:
+                import os as _os
+                _raw = str(_os.environ.get('SYMBOL_BLACKLIST', '') or '')
+            return [str(x).strip().upper() for x in _raw.replace('؛', ',').replace(';', ',').split(',') if str(x).strip()]
+        except Exception:
+            return []
+
+    @property
+    def night_block_start_h(self):
+        """P2 (r176): ساعت شروع پنجرهٔ شب تهران (پیش‌فرض ۰). برابر با end = خاموش"""
+        return int(self._tnum('NIGHT_BLOCK_START_H', 0))
+
+    @property
+    def night_block_end_h(self):
+        """P2 (r176): ساعت پایان پنجرهٔ شب تهران (پیش‌فرض ۷)"""
+        return int(self._tnum('NIGHT_BLOCK_END_H', 7))
+
+    @property
+    def global_fuse_limit(self):
+        """P3 (r176): تعداد باخت در پنجره برای فعال‌شدن فیوز سراسری. 0 = خاموش"""
+        return min(10, max(0, int(self._tnum('GLOBAL_FUSE_LIMIT', 3))))
+
+    @property
+    def global_fuse_window_min(self):
+        """P3 (r176): بازهٔ خوشهٔ باخت برای فیوز سراسری (دقیقه)"""
+        return min(120, max(5, int(self._tnum('GLOBAL_FUSE_WINDOW_MIN', 15))))
+
+    @property
+    def global_fuse_cooldown_min(self):
+        """P3 (r176): مدت توقف خریدها پس از فعال‌شدن فیوز (دقیقه)"""
+        return min(360, max(15, int(self._tnum('GLOBAL_FUSE_COOLDOWN_MIN', 60))))
+
+    @property
     def loss_streak_window_h(self):
         # G3.2: بازه گارد ضد-چاقو (ساعت)
         return min(72.0, max(1.0, self._tnum('LOSS_STREAK_WINDOW_H', 12)))
