@@ -26,8 +26,14 @@ def read_log_tail_24h():
         return []
     with open(LOG_PATH, encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
-    cutoff_str = CUTOFF.strftime('%Y-%m-%d')
-    return [l for l in lines if cutoff_str in l or '2026-10-' in l][-5000:]
+    out = []
+    for _l in lines:
+        try:
+            if datetime.strptime(_l[:16], '%Y-%m-%d %H:%M') >= CUTOFF:
+                out.append(_l)
+        except ValueError:
+            pass
+    return out[-5000:]
 
 
 def parse_jalali_to_check_in_window(jdate_str, window_hours=24):
@@ -390,6 +396,7 @@ def main():
         if an_data:
             an_wins = 0
             an_losses = 0
+            an_breakeven = 0
             an_total_pnl = 0.0
             for row in an_data:
                 if not row or not any(str(c).strip() for c in row):
@@ -404,10 +411,12 @@ def main():
                     an_wins += 1
                 elif result == 'باخت':
                     an_losses += 1
+                elif result.startswith('سربه'):
+                    an_breakeven += 1
                 an_total_pnl += pnl
-            an_total = an_wins + an_losses
+            an_total = an_wins + an_losses + an_breakeven
             an_winrate = (an_wins / an_total * 100) if an_total > 0 else 0
-            print(f'  تعداد معاملات: {an_total}')
+            print(f'  تعداد معاملات: {an_total} (سربه‌سر: {an_breakeven})')
             print(f'  برد/باخت: {an_wins}/{an_losses}')
             print(f'  نرخ برد: {an_winrate:.1f}%')
             print(f'  P&L کل (واقعی): {an_total_pnl:+.4f} USDT')
