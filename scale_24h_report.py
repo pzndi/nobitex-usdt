@@ -73,9 +73,30 @@ def count_scale_from_ledger(led_rows):
     s1_dry = 0
     s2_dry = 0
     
+    # r192: پنجرهٔ واقعی ۲۴ساعت برای ledger (تاریخ شمسی تهران)
+    _cut_teh = None
+    try:
+        import jdatetime as _jd
+        import datetime as _dt_l
+        from zoneinfo import ZoneInfo
+        _now_teh = _dt_l.datetime.now(ZoneInfo('Asia/Tehran')).replace(tzinfo=None)
+        _cut_teh = _now_teh - _dt_l.timedelta(hours=24)
+    except Exception:
+        _cut_teh = None
     for _, r in led_rows:
         if len(r) < 12:
             continue
+        if _cut_teh is not None:
+            try:
+                _m_d = re.match(r'^(\d{4})/(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2})', str(r[0]).strip())
+                if not _m_d:
+                    continue
+                _g_d = _jd.datetime(int(_m_d.group(1)), int(_m_d.group(2)), int(_m_d.group(3)),
+                                    int(_m_d.group(4)), int(_m_d.group(5))).togregorian()
+                if _g_d < _cut_teh:
+                    continue
+            except Exception:
+                continue
         action = str(r[2]).strip()
         if action != 'خرید':
             continue
@@ -190,7 +211,9 @@ def count_guard_rejections(lines):
     """شمارش رد گاردها از لاگ"""
     counts = {}
     for line in lines:
-        if 'skip buy' not in line and 'انجام نشد' not in line:
+        if 'skip buy' not in line and 'انجام نشد' not in line and 'مسدود شد' not in line:
+            continue
+        if 'G-instant-exit' in line:
             continue
         ts = re.match(r'^(\d{4}-\d{2}-\d{2})', line)
         if ts:
@@ -200,16 +223,30 @@ def count_guard_rejections(lines):
                     continue
             except ValueError:
                 pass
-        if 'momentum' in line or 'PUMP_GUARD' in line:
+        if 'momentum' in line or 'PUMP_GUARD' in line or 'local premium' in line or 'above global mark' in line:
             reason = 'PUMP_GUARD'
         elif 'SL band' in line:
             reason = 'G_BANDCAP'
+        elif 'SL buffer' in line:
+            reason = 'G_SLBUF'
+        elif '(P0)' in line or 'لیست سیاه' in line:
+            reason = 'P0_BLACKLIST'
+        elif '(P2)' in line or 'شب تهران' in line:
+            reason = 'P2_NIGHT'
+        elif '(P3)' in line or 'فیوز' in line:
+            reason = 'P3_FUSE'
         elif 'symbol blocked' in line:
             reason = 'BLOCKED_SYMBOLS'
         elif 'موجودی USDT کافی نیست' in line:
             reason = 'INSUFFICIENT_USDT'
         elif 'no global mark' in line:
             reason = 'G_GLOBAL'
+        elif 'knife cooldown' in line:
+            reason = 'G_KNIFE'
+        elif 'regime bearish' in line:
+            reason = 'G_REGIME'
+        elif 'پوزیشن یا سفارش باز' in line:
+            reason = 'G_BUSY'
         else:
             reason = 'OTHER'
         counts[reason] = counts.get(reason, 0) + 1
