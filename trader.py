@@ -1590,7 +1590,7 @@ def check_position_timeout(st, ws_t, client, dry, led, prices):
                 _p6_on = True
             if _p6_on:
                 try:
-                    _tgt_p6 = [x for x in (_oco_placed_run.get(sym) or []) if x]
+                    _tgt_p6 = []  # P6.1 (r184): ارجاع به _oco_placed_run (محلیِ sync_order_statuses) حذف شد — NameError بی‌صدا
                     _rows_p6 = []
                     for _rn_p6, _rr_p6 in (led.get('rows') or []):
                         if (_rr_p6[1].strip().upper() == sym and 'OCO' in str(_rr_p6[4])
@@ -1599,6 +1599,7 @@ def check_position_timeout(st, ws_t, client, dry, led, prices):
                             _tgt_p6.extend(x for x in _oids_p6 if x and x != chr(8212))
                             _rows_p6.append(_rn_p6)
                     _tgt_p6 = list(dict.fromkeys(_tgt_p6))
+                    log.info('P6 %s: اهداف لغو OCO = %d (ردیف‌های OCO باز: %d)', sym, len(_tgt_p6), len(_rows_p6))
                     if _tgt_p6:
                         for _oid_p6 in _tgt_p6:
                             try:
@@ -1608,16 +1609,15 @@ def check_position_timeout(st, ws_t, client, dry, led, prices):
                                 if not _ok_p6 and isinstance(_cd_p6, dict) and str(_cd_p6.get('error')) == 'NotFound':
                                     _ok_p6 = True
                                 log.info('P6 %s: لغو OCO %s → %s', sym, _oid_p6, 'OK' if _ok_p6 else 'ناموفق')
-                            except Exception:
-                                pass
+                            except Exception as _e_p6o:
+                                log.warning('P6 %s: خطا در لغو OCO %s — %s', sym, _oid_p6, _e_p6o)
                         for _rn_p6 in _rows_p6:
                             try:
                                 ws_t.update_cell(_rn_p6, 12, ST_CANCELLED)
                             except Exception:
                                 pass
-                    _oco_placed_run.pop(sym, None)
-                except Exception:
-                    pass
+                except Exception as _e_p6:
+                    log.warning('P6 %s: خطا در مسیر لغو OCO — %s', sym, _e_p6)
             exit_position(st, ws_t, client, sym,
                           'انقضای مدت (%.0fh)' % st.position_timeout_h,
                           px, led)

@@ -12,3 +12,6 @@ update.log.*.gz
 *_dump.txt
 *.bak-*
 update.log
+
+# بک‌آپ‌های محلی (r184)
+*.bak
