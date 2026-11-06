@@ -350,30 +350,42 @@ class Settings:
         except Exception:
             return []
 
+    def _gnum(self, key, default):
+        """P3.1 (r186): زنجیرهٔ پیکربندی محافظ‌ها — شیت → .env → پیش‌فرض کد.
+        تا این‌حلقه کلیدهای عددی P2/P3 فقط از شیت/پیش‌فرض خوانده می‌شدند و مقدار
+        .env نادیده می‌ماند (شاهد r185: تب تنظیمات فاقد GLOBAL_FUSE_*/NIGHT_BLOCK_*)."""
+        v = self.trading.get(key)
+        if v is None or str(v).strip() == '':
+            try:
+                v = load_env('.env').get(key)
+            except Exception:
+                v = None
+        return _clamp(key, _num(v, default), default)
+
     @property
     def night_block_start_h(self):
         """P2 (r176): ساعت شروع پنجرهٔ شب تهران (پیش‌فرض ۰). برابر با end = خاموش"""
-        return int(self._tnum('NIGHT_BLOCK_START_H', 0))
+        return int(self._gnum('NIGHT_BLOCK_START_H', 0))  # P3.1 (r186)
 
     @property
     def night_block_end_h(self):
         """P2 (r176): ساعت پایان پنجرهٔ شب تهران (پیش‌فرض ۷)"""
-        return int(self._tnum('NIGHT_BLOCK_END_H', 7))
+        return int(self._gnum('NIGHT_BLOCK_END_H', 7))  # P3.1 (r186)
 
     @property
     def global_fuse_limit(self):
         """P3 (r176): تعداد باخت در پنجره برای فعال‌شدن فیوز سراسری. 0 = خاموش"""
-        return min(10, max(0, int(self._tnum('GLOBAL_FUSE_LIMIT', 3))))
+        return min(10, max(0, int(self._gnum('GLOBAL_FUSE_LIMIT', 3))))  # P3.1 (r186)
 
     @property
     def global_fuse_window_min(self):
         """P3 (r176): بازهٔ خوشهٔ باخت برای فیوز سراسری (دقیقه)"""
-        return min(120, max(5, int(self._tnum('GLOBAL_FUSE_WINDOW_MIN', 15))))
+        return min(120, max(5, int(self._gnum('GLOBAL_FUSE_WINDOW_MIN', 15))))  # P3.1 (r186)
 
     @property
     def global_fuse_cooldown_min(self):
         """P3 (r176): مدت توقف خریدها پس از فعال‌شدن فیوز (دقیقه)"""
-        return min(360, max(15, int(self._tnum('GLOBAL_FUSE_COOLDOWN_MIN', 60))))
+        return min(360, max(15, int(self._gnum('GLOBAL_FUSE_COOLDOWN_MIN', 60))))  # P3.1 (r186)
 
     @property
     def loss_streak_window_h(self):
