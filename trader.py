@@ -2488,7 +2488,8 @@ def cancel_stale_entries(st, ws_t, client, led):
                     for _ps in list(led.get('pending') or ()):
                         if _norm_sym(_ps) == _norm_sym(sym):
                             led['pending'].discard(_ps)
-                log.info('سفارش ورود کهنه لغو شد: %s (سن %.0f دقیقه)%s', sym, age_min,
+                log.info('سفارش ورود کهنه لغو شد: %s (سن %.0f دقیقه، oid=%s، ردیف=%s)%s',
+                         sym, age_min, oid, _c_row if _c_row is not None else '—',
                          ' — نماد در pending ماند (سفارش باز دیگر)' if _still else '')
         elif isinstance(data_c, dict) and str(data_c.get('error')) == 'NotFound':
             # سفارش در فاصله fetch→cancel از لیست خارج شده (fill/لغو بیرونی) —
