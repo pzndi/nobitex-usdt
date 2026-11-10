@@ -3688,7 +3688,6 @@ def update_report(sh, st, rows, client=None):
             unreal += p['volume'] * (px - entry_eff) - (buy_fee_r or 0.0)
 
     realized = 0.0
-    realized = 0.0
     closed = wins = 0
     for _, r in led['rows']:
         if r[2].strip() != 'فروش':
