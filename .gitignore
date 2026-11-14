@@ -19,3 +19,4 @@ update.log
 .*.b64
 *.bak.*
 *.out
+round-scripts/
